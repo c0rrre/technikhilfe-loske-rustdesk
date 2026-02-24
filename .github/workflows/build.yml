@@ -1,0 +1,225 @@
+name: RustDesk Builder
+
+on:
+  push:
+    tags:
+      - '*'
+  workflow_dispatch:
+    inputs:
+      rustdesk_ref:
+        description: 'RustDesk Version (Tag oder Branch)'
+        required: true
+        default: 'master'
+
+permissions:
+  contents: write
+
+jobs:
+  build-portable:
+    name: Build Windows Portable
+    runs-on: windows-2022
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      LLVM_INSTALL_PATH: C:\Program Files\LLVM
+    
+    steps:
+      # 1. RustDesk Source Code laden (in Unterordner 'source_code')
+      - name: Checkout RustDesk Source
+        uses: actions/checkout@v4
+        with:
+          repository: rustdesk/rustdesk
+          ref: ${{ github.event.inputs.rustdesk_ref || github.ref_name }}
+          submodules: recursive
+          path: source_code
+
+      # 2. DEIN Repo laden (in Unterordner 'my_config')
+      # Damit haben wir Zugriff auf deinen BRANDING Ordner
+      - name: Checkout My Config
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: master
+          path: my_config
+
+      # 3. Zusammenfügen & Branding anwenden
+      - name: Apply Branding & Prepare
+        shell: bash
+        run: |
+          echo "Verschiebe Quellcode ins Hauptverzeichnis..."
+          cp -r source_code/* .
+          cp -r source_code/.* . 2>/dev/null || true
+          rm -rf source_code
+
+          echo "Injeziere Branding aus 'my_config/BRANDING'..."
+          
+          # Pfad zu deinen Logos: my_config/BRANDING/...
+          BRANDING_DIR="my_config/BRANDING"
+
+          if [ -d "$BRANDING_DIR" ]; then
+             echo "BRANDING Ordner gefunden. Kopiere Dateien..."
+             
+             # Ziel-Ordner erstellen
+             mkdir -p flutter/assets/images
+             mkdir -p flutter/windows/runner/resources
+             
+             # Logo kopieren
+             if [ -f "$BRANDING_DIR/logo.png" ]; then
+                echo "Kopiere logo.png..."
+                cp "$BRANDING_DIR/logo.png" "flutter/assets/images/logo.png"
+                # Ersetze alle anderen logo.png Instanzen
+                find flutter -name "logo.png" -exec cp "$BRANDING_DIR/logo.png" {} + || true
+             else
+                echo "WARNUNG: logo.png nicht in $BRANDING_DIR gefunden!"
+             fi
+             
+             # Icon kopieren
+             if [ -f "$BRANDING_DIR/app_icon.ico" ]; then
+                echo "Kopiere app_icon.ico..."
+                cp "$BRANDING_DIR/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+             else
+                echo "WARNUNG: app_icon.ico nicht in $BRANDING_DIR gefunden!"
+             fi
+          else
+             echo "FEHLER: Ordner 'BRANDING' existiert nicht in deinem Repo!"
+             ls -R my_config
+          fi
+          
+          # Aufräumen
+          rm -rf my_config
+
+      # 4. Versionierung (Tag + Datum)
+      - name: Setup Environment Variables
+        shell: bash
+        run: |
+          DATE_STR=$(date +'%Y.%m.%d-%H%M')
+          
+          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
+             # Bei echtem Tag: Nimm Tag-Namen + Datum
+             VERSION_NAME="${{ github.ref_name }}_${DATE_STR}"
+          else
+             # Bei manuellem Start
+             VERSION_NAME="custom_${{ github.event.inputs.rustdesk_ref }}_${DATE_STR}"
+          fi
+          
+          # Slash durch Bindestrich ersetzen (falls Branch Name)
+          VERSION_NAME=$(echo "$VERSION_NAME" | sed 's|/|-|g')
+          
+          echo "VERSION_TAG=$VERSION_NAME" >> $GITHUB_ENV
+          echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
+
+      # 5. App Name & Beschreibungen ändern
+      - name: Apply Name & Config
+        shell: bash
+        env:
+          MY_APP_NAME: ${{ secrets.APP_NAME }}
+        run: |
+          if [ -n "$MY_APP_NAME" ]; then
+             sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
+             find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
+          fi
+
+      # 6. Server Config injizieren
+      - name: Inject Server Configuration
+        shell: bash
+        env:
+          VAL_API: ${{ secrets.API_SERVER }}
+          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
+          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
+          for CONF in "${TARGETS[@]}"; do
+            if [ -f "$CONF" ]; then
+              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
+            fi
+          done
+
+      # --- AB HIER STANDARD BUILD ---
+      - name: Install Build Tools (LLVM & NASM)
+        shell: powershell
+        run: choco install llvm nasm -y
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.5'
+          channel: 'stable'
+
+      - name: Install vcpkg Dependencies
+        shell: bash
+        run: |
+          rm -rf C:/vcpkg
+          git clone https://github.com/microsoft/vcpkg C:/vcpkg
+          pushd C:/vcpkg
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          ./bootstrap-vcpkg.bat
+          popd
+          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
+
+      - name: Generate Flutter Rust Bridge
+        shell: bash
+        run: |
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
+          pushd flutter
+          flutter pub get
+          popd
+          flutter_rust_bridge_codegen \
+            --rust-input src/flutter_ffi.rs \
+            --dart-output flutter/lib/generated_bridge.dart \
+            --rust-output src/bridge_generated.rs \
+            --c-output flutter/windows/runner/bridge_generated.h
+
+      - name: Build RustDesk Application
+        shell: powershell
+        env:
+          VCPKG_ROOT: C:\vcpkg
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+        run: |
+          Write-Host "Start Build Script..."
+          python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
+          
+          $sourceDir = "flutter\build\windows\x64\runner\Release"
+          if (-not (Test-Path $sourceDir)) {
+            Write-Error "FEHLER: Build Output nicht gefunden!"
+            exit 1
+          }
+          Move-Item -Path $sourceDir -Destination "rustdesk" -Force
+
+      - name: Pack Portable Executable
+        shell: powershell
+        run: |
+          Push-Location ./libs/portable
+          pip install -r requirements.txt
+          
+          $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
+          if (-not $exeFile) { Write-Error "KEINE EXE GEFUNDEN"; exit 1 }
+          
+          python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
+          Pop-Location
+          
+          New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
+          $packed = Get-ChildItem -Path . -Recurse -Filter "*packer.exe" | Select-Object -First 1
+          
+          if ($packed) {
+              $finalName = "./release_output/${{ secrets.APP_NAME }}_Portable_${{ env.VERSION_TAG }}.exe"
+              Move-Item $packed.FullName $finalName -Force
+              Write-Host "ERFOLG: $finalName"
+          } else {
+              Write-Error "Packen fehlgeschlagen."
+              exit 1
+          }
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.VERSION_TAG }}
+          files: release_output/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
