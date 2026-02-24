@@ -19,94 +19,124 @@ jobs:
     name: Build Windows Portable
     runs-on: windows-2022
     env:
+      # Globale Variablen
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      # WICHTIG: Erlaubt VCPKG, die System-Tools (NASM/YASM) zu nutzen!
+      VCPKG_ROOT: C:\vcpkg
+      # WICHTIG: Damit VCPKG System-Tools (NASM/YASM) findet!
       VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     
     steps:
-      # --- 1. RUSTDESK SOURCE ---
-      - name: Checkout RustDesk Source
-        uses: actions/checkout@v4
-        with:
-          repository: rustdesk/rustdesk
-          ref: ${{ github.event.inputs.rustdesk_ref || github.ref_name }}
-          submodules: recursive
-          path: source
-
-      # --- 2. BRANDING ---
-      - name: Checkout My Branding
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository }}
-          ref: main
-          path: branding
-
-      - name: Inject Branding
+      # --- 1. ZUSAMMENFÜHREN DER REPOS ---
+      - name: Checkout & Merge Repositories
         shell: bash
         run: |
-          if [ -f "branding/BRANDING/logo.png" ]; then
-             mkdir -p source/flutter/assets/images
-             cp "branding/BRANDING/logo.png" "source/flutter/assets/images/logo.png"
-             find source/flutter -name "logo.png" -exec cp "branding/BRANDING/logo.png" {} + || true
+          echo "1. Klone RustDesk Source..."
+          git clone https://github.com/rustdesk/rustdesk.git rustdesk_src
+          
+          # Version wechseln (Tag oder Master)
+          cd rustdesk_src
+          REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
+          # Falls es ein Tag ist (bei automatischem Auslöser)
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            REF="${{ github.ref_name }}"
           fi
-          if [ -f "branding/BRANDING/app_icon.ico" ]; then
-             mkdir -p source/flutter/windows/runner/resources
-             cp "branding/BRANDING/app_icon.ico" "source/flutter/windows/runner/resources/app_icon.ico"
-          fi
-          rm -rf branding
+          echo "Checke Version aus: $REF"
+          git checkout "$REF" || git checkout master
+          cd ..
 
-      # --- 3. CONFIG ---
+          echo "2. Klone mein Branding Repo..."
+          # Wir klonen das aktuelle Repo (in dem der Workflow läuft)
+          git clone "https://github.com/${{ github.repository }}.git" my_branding_src
+          
+          echo "3. Verschiebe ALLES ins Hauptverzeichnis..."
+          # RustDesk Code ins Root verschieben
+          cp -r rustdesk_src/* .
+          cp -r rustdesk_src/.* . 2>/dev/null || true
+          
+          # Branding Ordner ins Root holen
+          if [ -d "my_branding_src/BRANDING" ]; then
+             cp -r my_branding_src/BRANDING .
+             echo "✅ BRANDING Ordner erfolgreich platziert."
+          else
+             echo "⚠️ WARNUNG: Kein BRANDING Ordner im Repo gefunden!"
+          fi
+          
+          # Aufräumen
+          rm -rf rustdesk_src my_branding_src
+          
+          echo "Dateistruktur:"
+          ls -la
+
+      # --- 2. VERSIONIERUNG ---
       - name: Setup Environment Variables
         shell: bash
         run: |
-          DATE_STR=$(date +'%Y.%m.%d-%H%M')
-          if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
-             VERSION_NAME="${{ github.ref_name }}_${DATE_STR}"
-          else
-             VERSION_NAME="custom_${{ github.event.inputs.rustdesk_ref }}_${DATE_STR}"
-          fi
-          VERSION_NAME=$(echo "$VERSION_NAME" | sed 's|/|-|g')
-          echo "VERSION_TAG=$VERSION_NAME" >> $GITHUB_ENV
+          echo "VERSION_TAG=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
 
-      - name: Apply Config
+      # --- 3. BRANDING ANWENDEN (Dein Original-Code) ---
+      - name: Apply Custom Branding
         shell: bash
-        working-directory: source
         env:
           MY_APP_NAME: ${{ secrets.APP_NAME }}
-          VAL_API: ${{ secrets.API_SERVER }}
-          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
-          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
-          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
+          echo "Wende Branding an..."
+          
           if [ -n "$MY_APP_NAME" ]; then
              sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
              find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
+
+          if [ -f "BRANDING/logo.png" ]; then
+             echo "Kopiere logo.png..."
+             mkdir -p flutter/assets/images
+             cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
+             find flutter -name "logo.png" -exec cp "BRANDING/logo.png" {} + || true
+          fi
+
+          if [ -f "BRANDING/app_icon.ico" ]; then
+             echo "Kopiere app_icon.ico..."
+             mkdir -p flutter/windows/runner/resources
+             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+          fi
+
+      # --- 4. SERVER KONFIGURATION (Mit ID_SERVER Fix) ---
+      - name: Inject Server Configuration
+        shell: bash
+        env:
+          VAL_API: ${{ secrets.API_SERVER }}
+          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
+          # Fallback auf Rendezvous Server, falls ID Server nicht gesetzt
+          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
+          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
+        run: |
+          echo "Suche Konfigurationsdateien..."
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
+          
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
+              echo "Bearbeite: $CONF"
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              # Wichtig: ID Server setzen
               sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
+              echo "Konfiguration angewendet."
             fi
           done
 
-      # --- 4. BUILD TOOLS (FIX FÜR AOM/NASM FEHLER) ---
-      - name: Install Build Tools (Choco)
+      # --- 5. BUILD TOOLS INSTALLIEREN ---
+      - name: Install Build Tools
         shell: powershell
         run: |
-          # Wir installieren NASM und YASM systemweit, damit VCPKG sie findet
+          # Wir installieren NASM und YASM systemweit (Wichtig für VCPKG/FFmpeg)
           choco install llvm nasm yasm -y
-          
-          # Pfade sicherstellen
+          # Pfad hinzufügen
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
-          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -117,80 +147,44 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 5. MANIFEST MODIFIZIEREN (FFMPEG ERZWINGEN) ---
-      - name: Force FFmpeg in Manifest
-        shell: python
-        working-directory: source
-        run: |
-          import json
-          import os
-
-          manifest_file = "vcpkg.json"
-          
-          if os.path.exists(manifest_file):
-              print(f"Lese {manifest_file}...")
-              with open(manifest_file, "r") as f:
-                  data = json.load(f)
-              
-              # Sicherstellen, dass dependencies existiert
-              if "dependencies" not in data:
-                  data["dependencies"] = []
-              
-              deps = data["dependencies"]
-              
-              # Prüfen ob ffmpeg schon drin ist
-              has_ffmpeg = False
-              for dep in deps:
-                  if isinstance(dep, str) and dep == "ffmpeg":
-                      has_ffmpeg = True
-                  elif isinstance(dep, dict) and dep.get("name") == "ffmpeg":
-                      has_ffmpeg = True
-              
-              if not has_ffmpeg:
-                  print("Füge FFmpeg zu den Abhängigkeiten hinzu...")
-                  # Wir fügen es mit allen Features hinzu für hwcodec
-                  data["dependencies"].append({
-                      "name": "ffmpeg",
-                      "features": ["avcodec", "avdevice", "avfilter", "avformat", "swresample", "swscale"]
-                  })
-                  
-                  with open(manifest_file, "w") as f:
-                      json.dump(data, f, indent=4)
-                  print("vcpkg.json erfolgreich aktualisiert!")
-              else:
-                  print("FFmpeg ist bereits im Manifest.")
-          else:
-              print("FEHLER: vcpkg.json nicht gefunden!")
-              exit(1)
-
-      # --- 6. VCPKG INSTALLIEREN (MANIFEST MODE) ---
+      # --- 6. VCPKG & DEPENDENCIES (Der Fix für die Fehler) ---
       - name: Install vcpkg Dependencies
         shell: bash
-        working-directory: source
         run: |
+          # 1. Manifest deaktivieren (Classic Mode erzwingen)
+          # Das ist nötig, um FFmpeg manuell mit allen Codecs zu installieren
+          if [ -f "vcpkg.json" ]; then
+             echo "Deaktiviere Manifest Mode (vcpkg.json -> vcpkg.json.bak)"
+             mv vcpkg.json vcpkg.json.bak
+          fi
+
+          # 2. VCPKG Setup
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           pushd C:/vcpkg
+          # Wir nutzen einen stabilen Commit
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
-          ./bootstrap-vcpkg.bat
           popd
-          
-          echo "Installiere Abhängigkeiten aus vcpkg.json..."
-          # Da wir working-directory: source haben, findet er die modifizierte vcpkg.json
-          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
+          C:/vcpkg/bootstrap-vcpkg.bat
 
-          # Check
+          # 3. Installation (FFmpeg explizit!)
+          echo "Installiere Libraries (Das dauert kurz)..."
+          C:/vcpkg/vcpkg install \
+            libvpx libyuv opus aom ffmpeg \
+            --triplet x64-windows-static \
+            --recurse
+
+          # 4. Check
           if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
-             echo "✅ SUCCESS: pixfmt.h gefunden!"
+             echo "✅ SUCCESS: FFmpeg Header gefunden!"
           else
-             echo "❌ FAILURE: pixfmt.h fehlt!"
+             echo "❌ FAILURE: FFmpeg Header fehlen! Build wird scheitern."
              exit 1
           fi
 
-      # --- 7. BRIDGE ---
+      # --- 7. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
         shell: bash
-        working-directory: source
         run: |
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           pushd flutter
@@ -202,17 +196,15 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 8. BUILD ---
+      # --- 8. KOMPILIEREN ---
       - name: Build RustDesk Application
         shell: powershell
-        working-directory: source
+        # Hier übergeben wir die Pfade explizit an den Compiler
         env:
-          VCPKG_ROOT: C:\vcpkg
-          VCPKG_DEFAULT_TRIPLET: x64-windows-static
-          # Wir helfen dem Compiler, die Header zu finden
           INCLUDE: C:\vcpkg\installed\x64-windows-static\include
           LIB: C:\vcpkg\installed\x64-windows-static\lib
           LIBPATH: C:\vcpkg\installed\x64-windows-static\lib
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
         run: |
           Write-Host "Start Build Script..."
           
@@ -222,34 +214,41 @@ jobs:
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
           $sourceDir = "flutter\build\windows\x64\runner\Release"
+          Write-Host "Prüfe auf Build Output in: $sourceDir"
+          
           if (-not (Test-Path $sourceDir)) {
-            Write-Error "FEHLER: Build Output nicht gefunden!"
+            Write-Error "FEHLER: Build Output nicht gefunden! (Compiler abgestürzt)"
             exit 1
           }
+          
+          Write-Host "Gefunden! Verschiebe..."
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
 
       # --- 9. PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
-        working-directory: source
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
           
           $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { Write-Error "KEINE EXE GEFUNDEN"; exit 1 }
+          if (-not $exeFile) { 
+            Write-Error "KEINE EXE GEFUNDEN"
+            exit 1 
+          }
           
+          Write-Host "Packe EXE: $($exeFile.Name)"
           python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
-          
           Pop-Location
           
           New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
+          
           $packed = Get-ChildItem -Path "libs/portable" -Filter "*packer.exe" | Select-Object -First 1
           
           if ($packed) {
               $finalName = "./release_output/${{ secrets.APP_NAME }}_Portable_${{ env.VERSION_TAG }}.exe"
               Move-Item $packed.FullName $finalName -Force
-              Write-Host "ERFOLG: $finalName"
+              Write-Host "ERFOLG! Datei erstellt: $finalName"
           } else {
               Write-Error "Packen fehlgeschlagen."
               exit 1
@@ -259,6 +258,6 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ env.VERSION_TAG }}
-          files: source/release_output/*.exe
+          files: release_output/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
