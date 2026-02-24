@@ -21,8 +21,9 @@ jobs:
     env:
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      # Zentrale Definition der VCPKG Pfade
       VCPKG_INSTALLED: C:\vcpkg\installed\x64-windows-static
+      # WICHTIG: Damit VCPKG unsere System-Tools (NASM/YASM/Perl) findet!
+      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     
     steps:
       # --- 1. RUSTDESK SOURCE ---
@@ -57,7 +58,7 @@ jobs:
           fi
           rm -rf branding
 
-      # --- 3. VERSION & CONFIG ---
+      # --- 3. CONFIG ---
       - name: Setup Environment Variables
         shell: bash
         run: |
@@ -100,10 +101,15 @@ jobs:
             fi
           done
 
-      # --- 4. BUILD TOOLS ---
+      # --- 4. BUILD TOOLS (SYSTEMWEIT) ---
       - name: Install Build Tools
         shell: powershell
-        run: choco install llvm nasm -y
+        run: |
+          # Wir installieren NASM und YASM systemweit via Choco
+          choco install llvm nasm yasm -y
+          
+          # Wir fügen den Pfad explizit zum GitHub Path hinzu
+          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -114,50 +120,33 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 5. VCPKG (MIT NASM FIX) ---
+      # --- 5. VCPKG (ENV VAR PASS-THROUGH) ---
       - name: Install vcpkg Dependencies
         shell: bash
         working-directory: source
         run: |
-          echo "--- DEBUG: Prüfe vcpkg.json ---"
-          if [ ! -f "vcpkg.json" ]; then
-             echo "❌ FEHLER: vcpkg.json fehlt im Ordner source!"
-             exit 1
-          fi
+          # Überprüfung: Ist NASM da?
+          echo "Prüfe NASM..."
+          nasm -v || echo "WARNUNG: NASM Befehl nicht gefunden"
 
-          echo "Bereite VCPKG vor..."
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           
-          # Ordner für Downloads erstellen
-          mkdir -p C:/vcpkg/downloads
-
-          # --- FIX: NASM MANUELL LADEN ---
-          # Wir laden die Datei manuell mit curl, da vcpkg oft an nasm.us scheitert
-          echo "Lade NASM manuell herunter (Fix für Timeout)..."
-          NASM_URL="https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip"
-          NASM_OUT="C:/vcpkg/downloads/nasm-3.01-win64.zip"
-          
-          # curl mit Retry, -L (Follow Redirects) und -f (Fail on Error)
-          curl -L -o "$NASM_OUT" "$NASM_URL" --retry 5 --retry-delay 10 --connect-timeout 60
-          
-          if [ -f "$NASM_OUT" ]; then
-             echo "✅ NASM erfolgreich vorgeladen."
-          else
-             echo "WARNUNG: Manueller NASM Download fehlgeschlagen. Vcpkg wird es selbst versuchen."
-          fi
-          # -------------------------------
+          # Wir nutzen einen fixen Commit für Stabilität (optional, aber empfohlen)
+          pushd C:/vcpkg
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          popd
 
           C:/vcpkg/bootstrap-vcpkg.bat
           
-          echo "Installiere Abhängigkeiten (Manifest Mode)..."
+          echo "Installiere Abhängigkeiten..."
+          # VCPKG_KEEP_ENV_VARS ist oben gesetzt, damit NASM gefunden wird!
           C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
 
-          echo "--- DEBUG: Prüfe Installation ---"
           if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
-             echo "✅ SUCCESS: pixfmt.h wurde erfolgreich installiert!"
+             echo "✅ SUCCESS: pixfmt.h gefunden!"
           else
-             echo "❌ FAILURE: pixfmt.h fehlt! Installation ist fehlgeschlagen."
+             echo "❌ FAILURE: pixfmt.h fehlt!"
              exit 1
           fi
 
@@ -189,10 +178,8 @@ jobs:
         run: |
           Write-Host "Start Build Script..."
           
-          if (-not (Test-Path "$env:INCLUDE\libavutil\pixfmt.h")) {
-             Write-Error "CRITICAL: Header Dateien fehlen vor dem Build!"
-             exit 1
-          }
+          # Nochmal sicherstellen, dass NASM im Pfad ist
+          $env:PATH += ";C:\Program Files\NASM"
 
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
