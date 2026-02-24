@@ -23,91 +23,83 @@ jobs:
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
     
     steps:
-      # 1. RustDesk Source Code laden (in Unterordner 'source_code')
+      # --- SCHRITT 1: RustDesk Quellcode holen ---
       - name: Checkout RustDesk Source
         uses: actions/checkout@v4
         with:
           repository: rustdesk/rustdesk
           ref: ${{ github.event.inputs.rustdesk_ref || github.ref_name }}
           submodules: recursive
-          path: source_code
+          path: rustdesk_src
 
-      # 2. DEIN Repo laden (in Unterordner 'my_config')
-      # Damit haben wir Zugriff auf deinen BRANDING Ordner
-      - name: Checkout My Config
+      # --- SCHRITT 2: Dein Branding holen ---
+      # Wir holen deinen Branch 'main'. Falls deiner 'master' heißt, ändere 'ref: main' zu 'ref: master'
+      - name: Checkout My Branding
         uses: actions/checkout@v4
         with:
           repository: ${{ github.repository }}
-          ref: master
-          path: my_config
+          ref: main  
+          path: my_branding_repo
 
-      # 3. Zusammenfügen & Branding anwenden
-      - name: Apply Branding & Prepare
+      # --- SCHRITT 3: Zusammenfügen ---
+      - name: Prepare & Apply Branding
         shell: bash
         run: |
-          echo "Verschiebe Quellcode ins Hauptverzeichnis..."
-          cp -r source_code/* .
-          cp -r source_code/.* . 2>/dev/null || true
-          rm -rf source_code
+          echo "Verschiebe RustDesk-Code ins Hauptverzeichnis..."
+          cp -r rustdesk_src/* .
+          cp -r rustdesk_src/.* . 2>/dev/null || true
+          rm -rf rustdesk_src
 
-          echo "Injeziere Branding aus 'my_config/BRANDING'..."
+          echo "Suche Branding in 'my_branding_repo/BRANDING'..."
+          BRANDING_SOURCE="my_branding_repo/BRANDING"
           
-          # Pfad zu deinen Logos: my_config/BRANDING/...
-          BRANDING_DIR="my_config/BRANDING"
-
-          if [ -d "$BRANDING_DIR" ]; then
-             echo "BRANDING Ordner gefunden. Kopiere Dateien..."
+          if [ -d "$BRANDING_SOURCE" ]; then
+             echo "Branding Ordner gefunden. Kopiere..."
              
-             # Ziel-Ordner erstellen
              mkdir -p flutter/assets/images
              mkdir -p flutter/windows/runner/resources
              
              # Logo kopieren
-             if [ -f "$BRANDING_DIR/logo.png" ]; then
+             if [ -f "$BRANDING_SOURCE/logo.png" ]; then
                 echo "Kopiere logo.png..."
-                cp "$BRANDING_DIR/logo.png" "flutter/assets/images/logo.png"
-                # Ersetze alle anderen logo.png Instanzen
-                find flutter -name "logo.png" -exec cp "$BRANDING_DIR/logo.png" {} + || true
+                cp "$BRANDING_SOURCE/logo.png" "flutter/assets/images/logo.png"
+                # Ersetze alle anderen Instanzen sicherheitshalber auch
+                find flutter -name "logo.png" -exec cp "$BRANDING_SOURCE/logo.png" {} + || true
              else
-                echo "WARNUNG: logo.png nicht in $BRANDING_DIR gefunden!"
+                echo "WARNUNG: logo.png fehlt im BRANDING Ordner!"
              fi
              
              # Icon kopieren
-             if [ -f "$BRANDING_DIR/app_icon.ico" ]; then
+             if [ -f "$BRANDING_SOURCE/app_icon.ico" ]; then
                 echo "Kopiere app_icon.ico..."
-                cp "$BRANDING_DIR/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+                cp "$BRANDING_SOURCE/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
              else
-                echo "WARNUNG: app_icon.ico nicht in $BRANDING_DIR gefunden!"
+                echo "WARNUNG: app_icon.ico fehlt im BRANDING Ordner!"
              fi
           else
-             echo "FEHLER: Ordner 'BRANDING' existiert nicht in deinem Repo!"
-             ls -R my_config
+             echo "FEHLER: Ordner BRANDING nicht in deinem Repo gefunden!"
+             ls -R my_branding_repo
           fi
           
           # Aufräumen
-          rm -rf my_config
+          rm -rf my_branding_repo
 
-      # 4. Versionierung (Tag + Datum)
+      # --- 4. Versionierung ---
       - name: Setup Environment Variables
         shell: bash
         run: |
           DATE_STR=$(date +'%Y.%m.%d-%H%M')
-          
           if [[ "${{ github.event_name }}" == "push" && "${{ github.ref_type }}" == "tag" ]]; then
-             # Bei echtem Tag: Nimm Tag-Namen + Datum
              VERSION_NAME="${{ github.ref_name }}_${DATE_STR}"
           else
-             # Bei manuellem Start
              VERSION_NAME="custom_${{ github.event.inputs.rustdesk_ref }}_${DATE_STR}"
           fi
-          
-          # Slash durch Bindestrich ersetzen (falls Branch Name)
           VERSION_NAME=$(echo "$VERSION_NAME" | sed 's|/|-|g')
           
           echo "VERSION_TAG=$VERSION_NAME" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
 
-      # 5. App Name & Beschreibungen ändern
+      # --- 5. App Name ---
       - name: Apply Name & Config
         shell: bash
         env:
@@ -120,22 +112,23 @@ jobs:
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
 
-      # 6. Server Config injizieren
+      # --- 6. Server Config ---
       - name: Inject Server Configuration
         shell: bash
         env:
-          VAL_ID: ${{ secrets.ID_SERVER }}
           VAL_API: ${{ secrets.API_SERVER }}
           VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
+          VAL_ID: ${{ secrets.ID_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
-              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
+              echo "Patche $CONF ..."
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
             fi
           done
