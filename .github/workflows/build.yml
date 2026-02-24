@@ -21,12 +21,8 @@ jobs:
     env:
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      # Wir setzen VCPKG Variablen global für alle Schritte
-      VCPKG_ROOT: C:\vcpkg
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
-      # Pfad-Abkürzungen für später
-      MY_INCLUDE: C:\vcpkg\installed\x64-windows-static\include
-      MY_LIB: C:\vcpkg\installed\x64-windows-static\lib
+      # Zentrale Definition der VCPKG Pfade
+      VCPKG_INSTALLED: C:\vcpkg\installed\x64-windows-static
     
     steps:
       # --- 1. RUSTDESK SOURCE ---
@@ -118,10 +114,10 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 5. VCPKG (DER KRITISCHE FIX) ---
+      # --- 5. VCPKG (KORRIGIERT) ---
       - name: Install vcpkg Dependencies
         shell: bash
-        # Wir arbeiten im source-Ordner, aber wir geben Pfade jetzt EXPLIZIT an
+        # working-directory: source sorgt dafür, dass vcpkg.json gefunden wird!
         working-directory: source
         run: |
           echo "--- DEBUG: Prüfe vcpkg.json ---"
@@ -137,20 +133,18 @@ jobs:
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           
-          # Vcpkg bootstrap
           C:/vcpkg/bootstrap-vcpkg.bat
           
           echo "Installiere Abhängigkeiten (Manifest Mode)..."
-          # WICHTIG: --manifest-root="." zwingt vcpkg dazu, die vcpkg.json im aktuellen Ordner zu nutzen
-          # --x-install-root zwingt die Ausgabe nach C:/vcpkg/installed (besser für Pfadlänge)
-          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed" --manifest-root="."
+          # Wir entfernen --manifest-root, da wir im richtigen Ordner sind.
+          # vcpkg install ohne Argumente sucht automatisch die vcpkg.json
+          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
 
           echo "--- DEBUG: Prüfe Installation ---"
           if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
              echo "✅ SUCCESS: pixfmt.h wurde erfolgreich installiert!"
           else
              echo "❌ FAILURE: pixfmt.h fehlt! Installation ist fehlgeschlagen."
-             ls -R "C:/vcpkg/installed/x64-windows-static/include" || true
              exit 1
           fi
 
@@ -169,19 +163,27 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 7. BUILD (MIT ENV VARS) ---
+      # --- 7. BUILD (WICHTIG: ENV VARS) ---
       - name: Build RustDesk Application
         shell: powershell
         working-directory: source
-        # Hier übergeben wir die Pfade an den Compiler
+        # Hier übergeben wir die Pfade an den C++ Compiler
         env:
-          INCLUDE: ${{ env.MY_INCLUDE }}
-          LIB: ${{ env.MY_LIB }}
-          LIBPATH: ${{ env.MY_LIB }}
+          INCLUDE: ${{ env.VCPKG_INSTALLED }}\include
+          LIB: ${{ env.VCPKG_INSTALLED }}\lib
+          LIBPATH: ${{ env.VCPKG_INSTALLED }}\lib
+          VCPKG_ROOT: C:\vcpkg
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
         run: |
           Write-Host "Start Build Script..."
-          Write-Host "Include Path: $env:INCLUDE"
+          Write-Host "INCLUDE PATH: $env:INCLUDE"
           
+          # Sicherheitscheck
+          if (-not (Test-Path "$env:INCLUDE\libavutil\pixfmt.h")) {
+             Write-Error "CRITICAL: Header Dateien fehlen vor dem Build!"
+             exit 1
+          }
+
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
           $sourceDir = "flutter\build\windows\x64\runner\Release"
