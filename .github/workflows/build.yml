@@ -114,18 +114,14 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 5. VCPKG (KORRIGIERT) ---
+      # --- 5. VCPKG (MIT NASM FIX) ---
       - name: Install vcpkg Dependencies
         shell: bash
-        # working-directory: source sorgt dafür, dass vcpkg.json gefunden wird!
         working-directory: source
         run: |
           echo "--- DEBUG: Prüfe vcpkg.json ---"
-          if [ -f "vcpkg.json" ]; then
-             echo "✅ vcpkg.json gefunden!"
-          else
+          if [ ! -f "vcpkg.json" ]; then
              echo "❌ FEHLER: vcpkg.json fehlt im Ordner source!"
-             ls -la
              exit 1
           fi
 
@@ -133,11 +129,28 @@ jobs:
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           
+          # Ordner für Downloads erstellen
+          mkdir -p C:/vcpkg/downloads
+
+          # --- FIX: NASM MANUELL LADEN ---
+          # Wir laden die Datei manuell mit curl, da vcpkg oft an nasm.us scheitert
+          echo "Lade NASM manuell herunter (Fix für Timeout)..."
+          NASM_URL="https://www.nasm.us/pub/nasm/releasebuilds/3.01/win64/nasm-3.01-win64.zip"
+          NASM_OUT="C:/vcpkg/downloads/nasm-3.01-win64.zip"
+          
+          # curl mit Retry, -L (Follow Redirects) und -f (Fail on Error)
+          curl -L -o "$NASM_OUT" "$NASM_URL" --retry 5 --retry-delay 10 --connect-timeout 60
+          
+          if [ -f "$NASM_OUT" ]; then
+             echo "✅ NASM erfolgreich vorgeladen."
+          else
+             echo "WARNUNG: Manueller NASM Download fehlgeschlagen. Vcpkg wird es selbst versuchen."
+          fi
+          # -------------------------------
+
           C:/vcpkg/bootstrap-vcpkg.bat
           
           echo "Installiere Abhängigkeiten (Manifest Mode)..."
-          # Wir entfernen --manifest-root, da wir im richtigen Ordner sind.
-          # vcpkg install ohne Argumente sucht automatisch die vcpkg.json
           C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
 
           echo "--- DEBUG: Prüfe Installation ---"
@@ -163,11 +176,10 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 7. BUILD (WICHTIG: ENV VARS) ---
+      # --- 7. BUILD ---
       - name: Build RustDesk Application
         shell: powershell
         working-directory: source
-        # Hier übergeben wir die Pfade an den C++ Compiler
         env:
           INCLUDE: ${{ env.VCPKG_INSTALLED }}\include
           LIB: ${{ env.VCPKG_INSTALLED }}\lib
@@ -176,9 +188,7 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
         run: |
           Write-Host "Start Build Script..."
-          Write-Host "INCLUDE PATH: $env:INCLUDE"
           
-          # Sicherheitscheck
           if (-not (Test-Path "$env:INCLUDE\libavutil\pixfmt.h")) {
              Write-Error "CRITICAL: Header Dateien fehlen vor dem Build!"
              exit 1
