@@ -124,6 +124,7 @@ jobs:
       - name: Inject Server Configuration
         shell: bash
         env:
+          VAL_ID: ${{ secrets.ID_SERVER }}
           VAL_API: ${{ secrets.API_SERVER }}
           VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
@@ -131,6 +132,7 @@ jobs:
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
