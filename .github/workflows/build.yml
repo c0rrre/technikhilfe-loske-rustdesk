@@ -19,11 +19,11 @@ jobs:
     name: Build Windows Portable
     runs-on: windows-2022
     env:
-      # Globale Variablen
+      # Globale Pfade
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
       VCPKG_ROOT: C:\vcpkg
-      # WICHTIG: Damit VCPKG System-Tools (NASM/YASM) findet!
+      # WICHTIG: Damit VCPKG unsere manuell installierten Tools findet!
       VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     
     steps:
@@ -32,12 +32,12 @@ jobs:
         shell: bash
         run: |
           echo "1. Klone RustDesk Source..."
+          # Wir klonen in einen temporären Ordner
           git clone https://github.com/rustdesk/rustdesk.git rustdesk_src
           
-          # Version wechseln (Tag oder Master)
+          # Version wechseln
           cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
-          # Falls es ein Tag ist (bei automatischem Auslöser)
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             REF="${{ github.ref_name }}"
           fi
@@ -46,20 +46,19 @@ jobs:
           cd ..
 
           echo "2. Klone mein Branding Repo..."
-          # Wir klonen das aktuelle Repo (in dem der Workflow läuft)
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
           echo "3. Verschiebe ALLES ins Hauptverzeichnis..."
-          # RustDesk Code ins Root verschieben
+          # Code verschieben (inklusive versteckter Dateien wie .cargo)
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           
-          # Branding Ordner ins Root holen
+          # Branding verschieben
           if [ -d "my_branding_src/BRANDING" ]; then
              cp -r my_branding_src/BRANDING .
-             echo "✅ BRANDING Ordner erfolgreich platziert."
+             echo "✅ BRANDING Ordner platziert."
           else
-             echo "⚠️ WARNUNG: Kein BRANDING Ordner im Repo gefunden!"
+             echo "⚠️ Kein BRANDING Ordner gefunden."
           fi
           
           # Aufräumen
@@ -75,7 +74,7 @@ jobs:
           echo "VERSION_TAG=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
 
-      # --- 3. BRANDING ANWENDEN (Dein Original-Code) ---
+      # --- 3. BRANDING ANWENDEN ---
       - name: Apply Custom Branding
         shell: bash
         env:
@@ -91,52 +90,60 @@ jobs:
           fi
 
           if [ -f "BRANDING/logo.png" ]; then
-             echo "Kopiere logo.png..."
              mkdir -p flutter/assets/images
              cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
              find flutter -name "logo.png" -exec cp "BRANDING/logo.png" {} + || true
           fi
 
           if [ -f "BRANDING/app_icon.ico" ]; then
-             echo "Kopiere app_icon.ico..."
              mkdir -p flutter/windows/runner/resources
              cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
           fi
 
-      # --- 4. SERVER KONFIGURATION (Mit ID_SERVER Fix) ---
+      # --- 4. SERVER CONFIG ---
       - name: Inject Server Configuration
         shell: bash
         env:
           VAL_API: ${{ secrets.API_SERVER }}
           VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
-          # Fallback auf Rendezvous Server, falls ID Server nicht gesetzt
           VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
-          echo "Suche Konfigurationsdateien..."
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
-          
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
-              echo "Bearbeite: $CONF"
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
-              # Wichtig: ID Server setzen
               sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
-              echo "Konfiguration angewendet."
             fi
           done
 
-      # --- 5. BUILD TOOLS INSTALLIEREN ---
+      # --- 5. TOOLS INSTALLIEREN (MIT NASM FIX) ---
       - name: Install Build Tools
         shell: powershell
         run: |
-          # Wir installieren NASM und YASM systemweit (Wichtig für VCPKG/FFmpeg)
-          choco install llvm nasm yasm -y
-          # Pfad hinzufügen
-          echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          # 1. LLVM installieren
+          choco install llvm -y
+
+          # 2. NASM MANUELL INSTALLIEREN (Fix für AOM Fehler)
+          # Wir laden es manuell, da vcpkg oft geblockt wird und Choco Pfade manchmal Probleme machen
+          $nasmUrl = "https://www.nasm.us/pub/nasm/releasebuilds/2.16.01/win64/nasm-2.16.01-win64.zip"
+          $nasmZip = "nasm.zip"
+          $nasmDest = "C:\tools"
+          
+          # Download mit User-Agent um Blockaden zu umgehen
+          Invoke-WebRequest -Uri $nasmUrl -OutFile $nasmZip -UserAgent "Mozilla/5.0"
+          
+          Expand-Archive -Path $nasmZip -DestinationPath $nasmDest -Force
+          
+          # Pfad setzen (C:\tools\nasm-2.16.01)
+          $nasmPath = "$nasmDest\nasm-2.16.01"
+          echo "$nasmPath" >> $env:GITHUB_PATH
+          
+          # Test
+          Write-Host "NASM installiert in: $nasmPath"
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -147,42 +154,43 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 6. VCPKG & DEPENDENCIES (Der Fix für die Fehler) ---
+      # --- 6. VCPKG (Classic Mode & Dependencies) ---
       - name: Install vcpkg Dependencies
         shell: bash
         run: |
-          # 1. Manifest deaktivieren (Classic Mode erzwingen)
-          # Das ist nötig, um FFmpeg manuell mit allen Codecs zu installieren
+          # Manifest deaktivieren um FFmpeg manuell zu erzwingen
           if [ -f "vcpkg.json" ]; then
-             echo "Deaktiviere Manifest Mode (vcpkg.json -> vcpkg.json.bak)"
              mv vcpkg.json vcpkg.json.bak
           fi
 
-          # 2. VCPKG Setup
+          # VCPKG Setup
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           pushd C:/vcpkg
-          # Wir nutzen einen stabilen Commit
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          ./bootstrap-vcpkg.bat
           popd
-          C:/vcpkg/bootstrap-vcpkg.bat
 
-          # 3. Installation (FFmpeg explizit!)
-          echo "Installiere Libraries (Das dauert kurz)..."
+          # Sicherstellen dass NASM gefunden wird
+          nasm -v || echo "WARNUNG: NASM noch nicht im Pfad sichtbar"
+
+          echo "Installiere Abhängigkeiten (inkl. aom & ffmpeg)..."
+          # Wir installieren explizit alles. 
+          # Durch VCPKG_KEEP_ENV_VARS (oben) nutzt er unser manuelles NASM.
           C:/vcpkg/vcpkg install \
             libvpx libyuv opus aom ffmpeg \
             --triplet x64-windows-static \
             --recurse
 
-          # 4. Check
+          # Prüfung
           if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
              echo "✅ SUCCESS: FFmpeg Header gefunden!"
           else
-             echo "❌ FAILURE: FFmpeg Header fehlen! Build wird scheitern."
+             echo "❌ FAILURE: Header fehlen!"
              exit 1
           fi
 
-      # --- 7. BRIDGE GENERIEREN ---
+      # --- 7. BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: bash
         run: |
@@ -196,10 +204,9 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 8. KOMPILIEREN ---
+      # --- 8. BUILD ---
       - name: Build RustDesk Application
         shell: powershell
-        # Hier übergeben wir die Pfade explizit an den Compiler
         env:
           INCLUDE: C:\vcpkg\installed\x64-windows-static\include
           LIB: C:\vcpkg\installed\x64-windows-static\lib
@@ -208,20 +215,14 @@ jobs:
         run: |
           Write-Host "Start Build Script..."
           
-          # Pfad für NASM sicherstellen
-          $env:PATH += ";C:\Program Files\NASM"
-
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
           $sourceDir = "flutter\build\windows\x64\runner\Release"
-          Write-Host "Prüfe auf Build Output in: $sourceDir"
-          
           if (-not (Test-Path $sourceDir)) {
-            Write-Error "FEHLER: Build Output nicht gefunden! (Compiler abgestürzt)"
+            Write-Error "FEHLER: Build Output nicht gefunden!"
             exit 1
           }
           
-          Write-Host "Gefunden! Verschiebe..."
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
 
       # --- 9. PACKEN ---
@@ -232,17 +233,13 @@ jobs:
           pip install -r requirements.txt
           
           $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { 
-            Write-Error "KEINE EXE GEFUNDEN"
-            exit 1 
-          }
+          if (-not $exeFile) { Write-Error "KEINE EXE GEFUNDEN"; exit 1 }
           
           Write-Host "Packe EXE: $($exeFile.Name)"
           python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
           Pop-Location
           
           New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
-          
           $packed = Get-ChildItem -Path "libs/portable" -Filter "*packer.exe" | Select-Object -First 1
           
           if ($packed) {
