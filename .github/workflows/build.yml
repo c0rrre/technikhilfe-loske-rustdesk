@@ -21,8 +21,7 @@ jobs:
     env:
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      VCPKG_INSTALLED: C:\vcpkg\installed\x64-windows-static
-      # WICHTIG: Damit VCPKG unsere System-Tools (NASM/YASM/Perl) findet!
+      # WICHTIG: Erlaubt VCPKG, die System-Tools (NASM/YASM) zu nutzen!
       VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     
     steps:
@@ -46,7 +45,6 @@ jobs:
       - name: Inject Branding
         shell: bash
         run: |
-          echo "Injeziere Branding..."
           if [ -f "branding/BRANDING/logo.png" ]; then
              mkdir -p source/flutter/assets/images
              cp "branding/BRANDING/logo.png" "source/flutter/assets/images/logo.png"
@@ -82,14 +80,12 @@ jobs:
           VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
-          # App Name
           if [ -n "$MY_APP_NAME" ]; then
              sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
              find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
-          # Server Config
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
@@ -101,15 +97,16 @@ jobs:
             fi
           done
 
-      # --- 4. BUILD TOOLS (SYSTEMWEIT) ---
-      - name: Install Build Tools
+      # --- 4. BUILD TOOLS (FIX FÜR AOM/NASM FEHLER) ---
+      - name: Install Build Tools (Choco)
         shell: powershell
         run: |
-          # Wir installieren NASM und YASM systemweit via Choco
+          # Wir installieren NASM und YASM systemweit, damit VCPKG sie findet
           choco install llvm nasm yasm -y
           
-          # Wir fügen den Pfad explizit zum GitHub Path hinzu
+          # Pfade sicherstellen
           echo "C:\Program Files\NASM" >> $env:GITHUB_PATH
+          echo "C:\Program Files\LLVM\bin" >> $env:GITHUB_PATH
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -120,29 +117,69 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 5. VCPKG (ENV VAR PASS-THROUGH) ---
+      # --- 5. MANIFEST MODIFIZIEREN (FFMPEG ERZWINGEN) ---
+      - name: Force FFmpeg in Manifest
+        shell: python
+        working-directory: source
+        run: |
+          import json
+          import os
+
+          manifest_file = "vcpkg.json"
+          
+          if os.path.exists(manifest_file):
+              print(f"Lese {manifest_file}...")
+              with open(manifest_file, "r") as f:
+                  data = json.load(f)
+              
+              # Sicherstellen, dass dependencies existiert
+              if "dependencies" not in data:
+                  data["dependencies"] = []
+              
+              deps = data["dependencies"]
+              
+              # Prüfen ob ffmpeg schon drin ist
+              has_ffmpeg = False
+              for dep in deps:
+                  if isinstance(dep, str) and dep == "ffmpeg":
+                      has_ffmpeg = True
+                  elif isinstance(dep, dict) and dep.get("name") == "ffmpeg":
+                      has_ffmpeg = True
+              
+              if not has_ffmpeg:
+                  print("Füge FFmpeg zu den Abhängigkeiten hinzu...")
+                  # Wir fügen es mit allen Features hinzu für hwcodec
+                  data["dependencies"].append({
+                      "name": "ffmpeg",
+                      "features": ["avcodec", "avdevice", "avfilter", "avformat", "swresample", "swscale"]
+                  })
+                  
+                  with open(manifest_file, "w") as f:
+                      json.dump(data, f, indent=4)
+                  print("vcpkg.json erfolgreich aktualisiert!")
+              else:
+                  print("FFmpeg ist bereits im Manifest.")
+          else:
+              print("FEHLER: vcpkg.json nicht gefunden!")
+              exit(1)
+
+      # --- 6. VCPKG INSTALLIEREN (MANIFEST MODE) ---
       - name: Install vcpkg Dependencies
         shell: bash
         working-directory: source
         run: |
-          # Überprüfung: Ist NASM da?
-          echo "Prüfe NASM..."
-          nasm -v || echo "WARNUNG: NASM Befehl nicht gefunden"
-
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
-          
-          # Wir nutzen einen fixen Commit für Stabilität (optional, aber empfohlen)
           pushd C:/vcpkg
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          ./bootstrap-vcpkg.bat
           popd
-
-          C:/vcpkg/bootstrap-vcpkg.bat
           
-          echo "Installiere Abhängigkeiten..."
-          # VCPKG_KEEP_ENV_VARS ist oben gesetzt, damit NASM gefunden wird!
+          echo "Installiere Abhängigkeiten aus vcpkg.json..."
+          # Da wir working-directory: source haben, findet er die modifizierte vcpkg.json
           C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
 
+          # Check
           if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
              echo "✅ SUCCESS: pixfmt.h gefunden!"
           else
@@ -150,7 +187,7 @@ jobs:
              exit 1
           fi
 
-      # --- 6. BRIDGE ---
+      # --- 7. BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: bash
         working-directory: source
@@ -165,20 +202,21 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 7. BUILD ---
+      # --- 8. BUILD ---
       - name: Build RustDesk Application
         shell: powershell
         working-directory: source
         env:
-          INCLUDE: ${{ env.VCPKG_INSTALLED }}\include
-          LIB: ${{ env.VCPKG_INSTALLED }}\lib
-          LIBPATH: ${{ env.VCPKG_INSTALLED }}\lib
           VCPKG_ROOT: C:\vcpkg
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
+          # Wir helfen dem Compiler, die Header zu finden
+          INCLUDE: C:\vcpkg\installed\x64-windows-static\include
+          LIB: C:\vcpkg\installed\x64-windows-static\lib
+          LIBPATH: C:\vcpkg\installed\x64-windows-static\lib
         run: |
           Write-Host "Start Build Script..."
           
-          # Nochmal sicherstellen, dass NASM im Pfad ist
+          # Pfad für NASM sicherstellen
           $env:PATH += ";C:\Program Files\NASM"
 
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
@@ -190,7 +228,7 @@ jobs:
           }
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
 
-      # --- 8. PACKEN ---
+      # --- 9. PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         working-directory: source
