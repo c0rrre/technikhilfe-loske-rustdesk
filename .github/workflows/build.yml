@@ -1,5 +1,6 @@
 name: RustDesk Builder
 
+# Wir bauen bei neuen Tags (Releases) oder manuellem Start
 on:
   push:
     tags:
@@ -24,6 +25,7 @@ jobs:
     
     steps:
       # --- SCHRITT 1: RustDesk Quellcode holen ---
+      # Wir laden den echten Code von RustDesk in einen Unterordner
       - name: Checkout RustDesk Source
         uses: actions/checkout@v4
         with:
@@ -33,7 +35,8 @@ jobs:
           path: rustdesk_src
 
       # --- SCHRITT 2: Dein Branding holen ---
-      # Wir holen deinen Branch 'main'. Falls deiner 'master' heißt, ändere 'ref: main' zu 'ref: master'
+      # Wir laden DEIN Repo (wo der BRANDING Ordner liegt)
+      # WICHTIG: Wenn dein Haupt-Branch 'master' heißt, ändere unten 'ref: main' zu 'ref: master'
       - name: Checkout My Branding
         uses: actions/checkout@v4
         with:
@@ -46,6 +49,7 @@ jobs:
         shell: bash
         run: |
           echo "Verschiebe RustDesk-Code ins Hauptverzeichnis..."
+          # Wir holen den Code aus dem Unterordner nach oben
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           rm -rf rustdesk_src
@@ -63,7 +67,7 @@ jobs:
              if [ -f "$BRANDING_SOURCE/logo.png" ]; then
                 echo "Kopiere logo.png..."
                 cp "$BRANDING_SOURCE/logo.png" "flutter/assets/images/logo.png"
-                # Ersetze alle anderen Instanzen sicherheitshalber auch
+                # Bruteforce: Wir ersetzen alle logo.png, die wir finden
                 find flutter -name "logo.png" -exec cp "$BRANDING_SOURCE/logo.png" {} + || true
              else
                 echo "WARNUNG: logo.png fehlt im BRANDING Ordner!"
@@ -94,6 +98,7 @@ jobs:
           else
              VERSION_NAME="custom_${{ github.event.inputs.rustdesk_ref }}_${DATE_STR}"
           fi
+          # Slash bereinigen
           VERSION_NAME=$(echo "$VERSION_NAME" | sed 's|/|-|g')
           
           echo "VERSION_TAG=$VERSION_NAME" >> $GITHUB_ENV
@@ -112,13 +117,14 @@ jobs:
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
 
-      # --- 6. Server Config ---
+      # --- 6. Server Config (Mit ID_SERVER Fix) ---
       - name: Inject Server Configuration
         shell: bash
         env:
           VAL_API: ${{ secrets.API_SERVER }}
           VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
-          VAL_ID: ${{ secrets.ID_SERVER }}
+          # Hier nutzen wir entweder das ID_SERVER Secret oder als Fallback den normalen Server
+          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
         run: |
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
@@ -128,6 +134,7 @@ jobs:
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              # ID SERVER HINZUGEFÜGT:
               sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
             fi
