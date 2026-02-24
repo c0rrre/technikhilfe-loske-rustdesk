@@ -21,6 +21,12 @@ jobs:
     env:
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
+      # Wir setzen VCPKG Variablen global für alle Schritte
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      # Pfad-Abkürzungen für später
+      MY_INCLUDE: C:\vcpkg\installed\x64-windows-static\include
+      MY_LIB: C:\vcpkg\installed\x64-windows-static\lib
     
     steps:
       # --- 1. RUSTDESK SOURCE ---
@@ -32,7 +38,7 @@ jobs:
           submodules: recursive
           path: source
 
-      # --- 2. DEIN BRANDING ---
+      # --- 2. BRANDING ---
       - name: Checkout My Branding
         uses: actions/checkout@v4
         with:
@@ -40,11 +46,10 @@ jobs:
           ref: main
           path: branding
 
-      # --- 3. BRANDING INJEZIEREN ---
-      - name: Inject Branding into Source
+      - name: Inject Branding
         shell: bash
         run: |
-          echo "Kopiere Branding Dateien nach 'source'..."
+          echo "Injeziere Branding..."
           if [ -f "branding/BRANDING/logo.png" ]; then
              mkdir -p source/flutter/assets/images
              cp "branding/BRANDING/logo.png" "source/flutter/assets/images/logo.png"
@@ -56,7 +61,7 @@ jobs:
           fi
           rm -rf branding
 
-      # --- 4. VERSIONIERUNG ---
+      # --- 3. VERSION & CONFIG ---
       - name: Setup Environment Variables
         shell: bash
         run: |
@@ -67,12 +72,10 @@ jobs:
              VERSION_NAME="custom_${{ github.event.inputs.rustdesk_ref }}_${DATE_STR}"
           fi
           VERSION_NAME=$(echo "$VERSION_NAME" | sed 's|/|-|g')
-          
           echo "VERSION_TAG=$VERSION_NAME" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
 
-      # --- 5. KONFIGURATION ---
-      - name: Apply Config & Server Settings
+      - name: Apply Config
         shell: bash
         working-directory: source
         env:
@@ -101,7 +104,7 @@ jobs:
             fi
           done
 
-      # --- 6. BUILD TOOLS ---
+      # --- 4. BUILD TOOLS ---
       - name: Install Build Tools
         shell: powershell
         run: choco install llvm nasm -y
@@ -115,25 +118,43 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 7. VCPKG ---
+      # --- 5. VCPKG (DER KRITISCHE FIX) ---
       - name: Install vcpkg Dependencies
         shell: bash
+        # Wir arbeiten im source-Ordner, aber wir geben Pfade jetzt EXPLIZIT an
         working-directory: source
         run: |
+          echo "--- DEBUG: Prüfe vcpkg.json ---"
+          if [ -f "vcpkg.json" ]; then
+             echo "✅ vcpkg.json gefunden!"
+          else
+             echo "❌ FEHLER: vcpkg.json fehlt im Ordner source!"
+             ls -la
+             exit 1
+          fi
+
+          echo "Bereite VCPKG vor..."
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
-          pushd C:/vcpkg
-          git reset --hard 120deac3062162151622ca4860575a33844ba10b
-          ./bootstrap-vcpkg.bat
           
-          # Integration aktivieren (hilft manchmal MSVC)
-          ./vcpkg integrate install
-          popd
+          # Vcpkg bootstrap
+          C:/vcpkg/bootstrap-vcpkg.bat
           
-          # Installieren
-          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
+          echo "Installiere Abhängigkeiten (Manifest Mode)..."
+          # WICHTIG: --manifest-root="." zwingt vcpkg dazu, die vcpkg.json im aktuellen Ordner zu nutzen
+          # --x-install-root zwingt die Ausgabe nach C:/vcpkg/installed (besser für Pfadlänge)
+          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed" --manifest-root="."
 
-      # --- 8. BRIDGE ---
+          echo "--- DEBUG: Prüfe Installation ---"
+          if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
+             echo "✅ SUCCESS: pixfmt.h wurde erfolgreich installiert!"
+          else
+             echo "❌ FAILURE: pixfmt.h fehlt! Installation ist fehlgeschlagen."
+             ls -R "C:/vcpkg/installed/x64-windows-static/include" || true
+             exit 1
+          fi
+
+      # --- 6. BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: bash
         working-directory: source
@@ -148,31 +169,29 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 9. BUILD (FIX: INCLUDE PPATHS FÜR HWCODEC!) ---
+      # --- 7. BUILD (MIT ENV VARS) ---
       - name: Build RustDesk Application
         shell: powershell
         working-directory: source
+        # Hier übergeben wir die Pfade an den Compiler
         env:
-          VCPKG_ROOT: C:\vcpkg
-          VCPKG_DEFAULT_TRIPLET: x64-windows-static
-          # WICHTIG: Damit MSVC die FFmpeg Header findet:
-          INCLUDE: C:\vcpkg\installed\x64-windows-static\include
-          LIB: C:\vcpkg\installed\x64-windows-static\lib
-          LIBPATH: C:\vcpkg\installed\x64-windows-static\lib
+          INCLUDE: ${{ env.MY_INCLUDE }}
+          LIB: ${{ env.MY_LIB }}
+          LIBPATH: ${{ env.MY_LIB }}
         run: |
-          Write-Host "Start Build Script in ./source ..."
+          Write-Host "Start Build Script..."
+          Write-Host "Include Path: $env:INCLUDE"
+          
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
           $sourceDir = "flutter\build\windows\x64\runner\Release"
           if (-not (Test-Path $sourceDir)) {
-            Write-Error "FEHLER: Build Output nicht gefunden! Compiler ist abgestürzt."
+            Write-Error "FEHLER: Build Output nicht gefunden!"
             exit 1
           }
-          
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
-          Write-Host "Build erfolgreich verschoben."
 
-      # --- 10. PACKEN ---
+      # --- 8. PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         working-directory: source
@@ -184,10 +203,10 @@ jobs:
           if (-not $exeFile) { Write-Error "KEINE EXE GEFUNDEN"; exit 1 }
           
           python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
+          
           Pop-Location
           
           New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
-          
           $packed = Get-ChildItem -Path "libs/portable" -Filter "*packer.exe" | Select-Object -First 1
           
           if ($packed) {
