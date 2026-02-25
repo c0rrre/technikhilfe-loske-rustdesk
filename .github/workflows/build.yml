@@ -183,10 +183,6 @@ jobs:
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
       
-          # Hardware-Codecs immer frisch installieren (keine Cache)
-          .\vcpkg install libmfx:x64-windows-static
-          .\vcpkg install onevpl:x64-windows-static
-      
       # --- 9. PYTHON PIP CACHE (Optional) ---
       - name: Cache Python Pip
         uses: actions/cache@v4
@@ -213,7 +209,7 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
           CARGO_INCREMENTAL: 0
         run: |
-          python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
+          python build.py --portable --flutter --vram --skip-portable-pack
           $sourceDir = "flutter\build\windows\x64\runner\Release"
           if (-not (Test-Path $sourceDir)) { exit 1 }
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
