@@ -147,15 +147,15 @@ jobs:
 
       # --- 4. ABHÄNGIGKEITEN (VCPKG CLEAN) ---
       - name: Install vcpkg Dependencies
-        shell: bash
+        shell: powershell
         run: |
-          rm -rf C:/vcpkg
-          git clone https://github.com/microsoft/vcpkg C:/vcpkg
-          pushd C:/vcpkg
+          Remove-Item -Recurse -Force C:\vcpkg -ErrorAction SilentlyContinue
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          cd C:\vcpkg
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
-          ./bootstrap-vcpkg.bat
-          popd
-          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
+          .\bootstrap-vcpkg.bat
+      
+          .\vcpkg install ffmpeg:x64-windows-static
 
       # --- 5. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
