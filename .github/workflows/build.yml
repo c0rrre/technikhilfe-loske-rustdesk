@@ -27,15 +27,13 @@ jobs:
       VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     
     steps:
-      # --- 1. ZUSAMMENFÜHREN DER REPOS (MIT RECURSIVE FIX!) ---
+      # --- 1. ZUSAMMENFÜHREN DER REPOS ---
       - name: Checkout & Merge Repositories
         shell: bash
         run: |
           echo "1. Klone RustDesk Source (RECURSIVE)..."
-          # WICHTIG: --recursive lädt hbb_common und scrap mit!
           git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
           
-          # Version wechseln
           cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
@@ -43,79 +41,56 @@ jobs:
           fi
           echo "Checke Version aus: $REF"
           git checkout "$REF" || git checkout master
-          
-          # Submodule sicherstellen (falls checkout sie verwirrt hat)
           git submodule update --init --recursive
           cd ..
 
-          echo "2. Klone mein Branding Repo..."
+          echo "2. Klone Branding Repo..."
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
-          echo "3. Verschiebe ALLES ins Hauptverzeichnis..."
-          # RustDesk Code (inkl. versteckter Dateien) verschieben
+          echo "3. Verschiebe Dateien ins Hauptverzeichnis..."
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
-          
-          # Branding Ordner holen
           if [ -d "my_branding_src/BRANDING" ]; then
              cp -r my_branding_src/BRANDING .
              echo "✅ BRANDING Dateien platziert."
-          else
-             echo "⚠️ Kein BRANDING Dateien gefunden."
           fi
-          
-          # Aufräumen
           rm -rf rustdesk_src my_branding_src
-          
-          echo "Dateistruktur prüfen (hbb_common muss voll sein):"
           ls -F libs/hbb_common/
 
+      # --- 2. ENVIRONMENT VARIABLES ---
       - name: Setup Environment Variables
         shell: bash
         run: |
-          # RustDesk Version aus Cargo.toml lesen
           VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
-      
-          # Datum im gewünschten Format
           DATE=$(date +'%Y-%m-%d-%H-%M')
-      
-          # Finaler Tag: <Version>-<Datum>
           VERSION_TAG="${VERSION}-${DATE}"
-      
           echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
-      
           echo "Generated VERSION_TAG=${VERSION_TAG}"
 
-      # --- 1. BRANDING ---
+      # --- 3. BRANDING ---
       - name: Apply Custom Branding
         shell: bash
         env:
           MY_APP_NAME: ${{ secrets.APP_NAME }}
         run: |
-          echo "Wende Branding an..."
-          
           if [ -n "$MY_APP_NAME" ]; then
              sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
              find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
-
           if [ -f "logo.png" ]; then
-             echo "Kopiere logo.png..."
              mkdir -p flutter/assets/images
              cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
              find flutter -name "logo.png" -exec cp "logo.png" {} + || true
           fi
-
           if [ -f "app_icon.ico" ]; then
-             echo "Kopiere app_icon.ico..."
              mkdir -p flutter/windows/runner/resources
              cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
           fi
 
-      # --- 2. SERVER KONFIGURATION ---
+      # --- 4. SERVER CONFIGURATION ---
       - name: Inject Server Configuration
         shell: bash
         env:
@@ -124,22 +99,18 @@ jobs:
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
           VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
         run: |
-          echo "Suche Konfigurationsdateien..."
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
-          
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
-              echo "Bearbeite: $CONF"
               sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
-              echo "Konfiguration angewendet."
             fi
           done
 
-      # --- 3. BUILD TOOLS ---
+      # --- 5. BUILD TOOLS ---
       - name: Install Build Tools (LLVM & NASM)
         shell: powershell
         run: choco install llvm nasm -y
@@ -150,6 +121,7 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # --- 6. RUST/CARGO CACHE ---
       - name: Cache Rust Target
         uses: actions/cache@v4
         with:
@@ -161,6 +133,7 @@ jobs:
           restore-keys: |
             rustdesk-${{ runner.os }}-
 
+      # --- 7. FLUTTER ---
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
@@ -177,7 +150,7 @@ jobs:
           restore-keys: |
             flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
 
-      # --- 4a. Setup vcpkg ---
+      # --- 8. VCPKG + DEPENDENCIES + CACHE ---
       - name: Setup vcpkg
         shell: powershell
         run: |
@@ -188,8 +161,7 @@ jobs:
           git fetch
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
           .\bootstrap-vcpkg.bat
-      
-      # --- 4b. Cache vcpkg installed ---
+
       - name: Cache vcpkg installed
         uses: actions/cache@v4
         with:
@@ -197,8 +169,7 @@ jobs:
             C:\vcpkg\installed
             C:\vcpkg\packages
           key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b
-      
-      # --- 4c. Install Dependencies ---
+
       - name: Install vcpkg Dependencies
         shell: powershell
         run: |
@@ -209,20 +180,26 @@ jobs:
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install onevpl:x64-windows-static
           .\vcpkg install aom:x64-windows-static
-      
-      # --- 5. BRIDGE GENERIEREN ---
+
+      # --- 9. PYTHON PIP CACHE (Optional) ---
+      - name: Cache Python Pip
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('libs/portable/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+
+      # --- 10. GENERATE BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
           cargo install flutter_rust_bridge_codegen --version 1.80.1
-
           Push-Location flutter
           flutter pub get
           Pop-Location
-      
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 6. KOMPILIEREN ---
+      # --- 11. BUILD APPLICATION ---
       - name: Build RustDesk Application
         shell: powershell
         env:
@@ -230,89 +207,41 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
           CARGO_INCREMENTAL: 0
         run: |
-          Write-Host "Start Build Script..."
-          
-          # Wir entfernen 'cargo update', da es Versionen kaputt machen kann.
-          # Wir vertrauen auf die Cargo.lock Datei.
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
-          
           $sourceDir = "flutter\build\windows\x64\runner\Release"
-          Write-Host "Prüfe auf Build Output in: $sourceDir"
-          
-          if (-not (Test-Path $sourceDir)) {
-            Write-Error "FEHLER: Build Output nicht gefunden! (Compiler abgestürzt)"
-            exit 1
-          }
-          
-          Write-Host "Gefunden! Verschiebe..."
+          if (-not (Test-Path $sourceDir)) { exit 1 }
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
 
+      # --- 12. CHECK HARDWARE ENCODER STATUS ---
       - name: Check Hardware Encoder Status
         shell: powershell
         run: |
-          Write-Host ""
-          Write-Host "======== ENCODER STATUS ========"
-
           function Check($name, $condition) {
-            if ($condition) {
-              Write-Host "✅ $name"
-            } else {
-              Write-Host "❌ $name"
-            }
+            if ($condition) { Write-Host "✅ $name" } else { Write-Host "❌ $name" }
           }
+          Check "NVIDIA NVENC" (Test-Path "C:\Program Files\NVIDIA GPU Computing Toolkit")
+          Check "AMD AMF (via FFmpeg)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\avcodec.lib")
+          Check "Intel QSV (oneVPL)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpl.lib")
+          Check "VP8/VP9 (libvpx)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib")
+          Check "AV1 (AOM)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\aom.lib")
 
-          # Nvidia NVENC
-          $nvenc = Test-Path "C:\Program Files\NVIDIA GPU Computing Toolkit"
-          Check "NVIDIA NVENC" $nvenc
-
-          # AMD AMF (kommt über ffmpeg)
-          $amf = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\avcodec.lib"
-          Check "AMD AMF (via FFmpeg)" $amf
-
-          # Intel QSV (oneVPL)
-          $qsv = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpl.lib"
-          Check "Intel QSV (oneVPL)" $qsv
-
-          # VP9
-          $vpx = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib"
-          Check "VP8/VP9 (libvpx)" $vpx
-
-          # AV1
-          $av1 = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\aom.lib"
-          Check "AV1 (AOM)" $av1
-
-          Write-Host "================================"
-
-      # --- 7. PACKEN ---
+      # --- 13. PACK PORTABLE EXECUTABLE ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
-          
           $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { 
-            Write-Error "KEINE EXE GEFUNDEN"
-            exit 1 
-          }
-          
-          Write-Host "Packe EXE: $($exeFile.Name)"
           python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
           Pop-Location
-          
           New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
-          
           $packed = Get-ChildItem -Path . -Recurse -Filter "*packer.exe" | Select-Object -First 1
-          
           if ($packed) {
               $finalName = "./release_output/${{ secrets.APP_NAME }}_Portable_${{ env.VERSION_TAG }}.exe"
               Move-Item $packed.FullName $finalName -Force
-              Write-Host "ERFOLG! Datei erstellt: $finalName"
-          } else {
-              Write-Error "Packen fehlgeschlagen."
-              exit 1
-          }
+          } else { exit 1 }
 
+      # --- 14. PUBLISH RELEASE ---
       - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
@@ -320,4 +249,3 @@ jobs:
           files: release_output/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
