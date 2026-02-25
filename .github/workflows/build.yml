@@ -169,7 +169,7 @@ jobs:
           path: |
             C:\vcpkg\installed\x64-windows-static\lib
             C:\vcpkg\installed\x64-windows-static\include
-          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b-basis
+          key: vcpkg-${{ runner.os }}-120deac3062162151622ca224860575a33844ba10b-basis
       
       # --- 8c. Install vcpkg Dependencies ---
       - name: Install vcpkg Dependencies
