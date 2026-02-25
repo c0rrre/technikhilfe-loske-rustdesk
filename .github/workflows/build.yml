@@ -178,7 +178,7 @@ jobs:
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
-          .\vcpkg install onevpl:x64-windows-static
+          .\vcpkg install libmfx:x64-windows-static
           .\vcpkg install aom:x64-windows-static
 
       # --- 9. PYTHON PIP CACHE (Optional) ---
