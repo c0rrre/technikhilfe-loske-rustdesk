@@ -177,14 +177,7 @@ jobs:
           restore-keys: |
             flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
 
-      - name: Cache vcpkg installed
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\vcpkg\installed
-            C:\vcpkg\packages
-          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b
-
+      # --- 4a. Setup vcpkg ---
       - name: Setup vcpkg
         shell: powershell
         run: |
@@ -195,7 +188,17 @@ jobs:
           git fetch
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
           .\bootstrap-vcpkg.bat
-
+      
+      # --- 4b. Cache vcpkg installed ---
+      - name: Cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\packages
+          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b
+      
+      # --- 4c. Install Dependencies ---
       - name: Install vcpkg Dependencies
         shell: powershell
         run: |
@@ -206,7 +209,7 @@ jobs:
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install onevpl:x64-windows-static
           .\vcpkg install aom:x64-windows-static
-
+      
       # --- 5. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
