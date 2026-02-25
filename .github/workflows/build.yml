@@ -133,6 +133,9 @@ jobs:
         shell: powershell
         run: choco install llvm nasm -y
 
+      - name: Setup MSVC Dev Environment
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
