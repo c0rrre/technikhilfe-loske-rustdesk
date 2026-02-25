@@ -150,22 +150,56 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust Target
+        uses: actions/cache@v4
+        with:
+          path: |
+            target
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: rustdesk-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            rustdesk-${{ runner.os }}-
+
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 4. ABHÄNGIGKEITEN (VCPKG CLEAN) ---
+      - name: Cache Flutter
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            flutter/.dart_tool
+          key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-${{ hashFiles('flutter/pubspec.lock') }}
+          restore-keys: |
+            flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
+
+      - name: Cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\installed
+            C:\vcpkg\packages
+          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b
+
+      - name: Setup vcpkg
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          }
+          cd C:\vcpkg
+          git fetch
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          .\bootstrap-vcpkg.bat
+
       - name: Install vcpkg Dependencies
         shell: powershell
         run: |
-          Remove-Item -Recurse -Force C:\vcpkg -ErrorAction SilentlyContinue
-          git clone https://github.com/microsoft/vcpkg C:\vcpkg
           cd C:\vcpkg
-          git reset --hard 120deac3062162151622ca4860575a33844ba10b
-          .\bootstrap-vcpkg.bat
-      
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
@@ -191,6 +225,7 @@ jobs:
         env:
           VCPKG_ROOT: C:\vcpkg
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
+          CARGO_INCREMENTAL: 0
         run: |
           Write-Host "Start Build Script..."
           
@@ -208,6 +243,42 @@ jobs:
           
           Write-Host "Gefunden! Verschiebe..."
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
+
+      - name: Check Hardware Encoder Status
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "======== ENCODER STATUS ========"
+
+          function Check($name, $condition) {
+            if ($condition) {
+              Write-Host "✅ $name"
+            } else {
+              Write-Host "❌ $name"
+            }
+          }
+
+          # Nvidia NVENC
+          $nvenc = Test-Path "C:\Program Files\NVIDIA GPU Computing Toolkit"
+          Check "NVIDIA NVENC" $nvenc
+
+          # AMD AMF (kommt über ffmpeg)
+          $amf = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\avcodec.lib"
+          Check "AMD AMF (via FFmpeg)" $amf
+
+          # Intel QSV (oneVPL)
+          $qsv = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpl.lib"
+          Check "Intel QSV (oneVPL)" $qsv
+
+          # VP9
+          $vpx = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib"
+          Check "VP8/VP9 (libvpx)" $vpx
+
+          # AV1
+          $av1 = Test-Path "C:\vcpkg\installed\x64-windows-static\lib\aom.lib"
+          Check "AV1 (AOM)" $av1
+
+          Write-Host "================================"
 
       # --- 7. PACKEN ---
       - name: Pack Portable Executable
