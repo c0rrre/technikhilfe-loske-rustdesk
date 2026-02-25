@@ -73,8 +73,19 @@ jobs:
       - name: Setup Environment Variables
         shell: bash
         run: |
-          echo "VERSION_TAG=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
+          # RustDesk Version aus Cargo.toml lesen
+          VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
+      
+          # Datum im gewünschten Format
+          DATE=$(date +'%Y-%m-%d-%H-%M')
+      
+          # Finaler Tag: <Version>-<Datum>
+          VERSION_TAG="${VERSION}-${DATE}"
+      
+          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
+      
+          echo "Generated VERSION_TAG=${VERSION_TAG}"
 
       # --- 1. BRANDING ---
       - name: Apply Custom Branding
