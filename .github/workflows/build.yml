@@ -209,7 +209,7 @@ jobs:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
           CARGO_INCREMENTAL: 0
         run: |
-          python build.py --portable --flutter --vram --skip-portable-pack
+          python build.py --portable --flutter --skip-portable-pack
           $sourceDir = "flutter\build\windows\x64\runner\Release"
           if (-not (Test-Path $sourceDir)) { exit 1 }
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
