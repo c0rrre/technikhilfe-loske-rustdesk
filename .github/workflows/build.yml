@@ -59,9 +59,9 @@ jobs:
           # Branding Ordner holen
           if [ -d "my_branding_src/BRANDING" ]; then
              cp -r my_branding_src/BRANDING .
-             echo "✅ BRANDING Ordner platziert."
+             echo "✅ BRANDING Dateien platziert."
           else
-             echo "⚠️ Kein BRANDING Ordner gefunden."
+             echo "⚠️ Kein BRANDING Dateien gefunden."
           fi
           
           # Aufräumen
@@ -69,11 +69,6 @@ jobs:
           
           echo "Dateistruktur prüfen (hbb_common muss voll sein):"
           ls -F libs/hbb_common/
-
-      - name: Checkout Source Code
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
       - name: Setup Environment Variables
         shell: bash
