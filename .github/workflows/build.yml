@@ -70,14 +70,18 @@ jobs:
           echo "Dateistruktur prüfen (hbb_common muss voll sein):"
           ls -F libs/hbb_common/
 
-      # --- 2. VERSIONIERUNG ---
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
       - name: Setup Environment Variables
         shell: bash
         run: |
           echo "VERSION_TAG=v$(date +'%Y.%m.%d-%H%M')" >> $GITHUB_ENV
           echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
 
-      # --- 3. BRANDING ANWENDEN ---
+      # --- 1. BRANDING ---
       - name: Apply Custom Branding
         shell: bash
         env:
@@ -92,57 +96,47 @@ jobs:
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
 
-          if [ -f "BRANDING/logo.png" ]; then
+          if [ -f "logo.png" ]; then
+             echo "Kopiere logo.png..."
              mkdir -p flutter/assets/images
              cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
-             find flutter -name "logo.png" -exec cp "BRANDING/logo.png" {} + || true
+             find flutter -name "logo.png" -exec cp "logo.png" {} + || true
           fi
 
-          if [ -f "BRANDING/app_icon.ico" ]; then
+          if [ -f "app_icon.ico" ]; then
+             echo "Kopiere app_icon.ico..."
              mkdir -p flutter/windows/runner/resources
              cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
           fi
 
-      # --- 4. SERVER CONFIG ---
+      # --- 2. SERVER KONFIGURATION ---
       - name: Inject Server Configuration
         shell: bash
         env:
           VAL_API: ${{ secrets.API_SERVER }}
           VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
-          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
           VAL_KEY: ${{ secrets.RS_PUB_KEY }}
+          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
         run: |
+          echo "Suche Konfigurationsdateien..."
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
+          
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
+              echo "Bearbeite: $CONF"
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
               sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
-              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
               sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
+              echo "Konfiguration angewendet."
             fi
           done
 
-      # --- 5. TOOLS INSTALLIEREN (NASM FIX) ---
-      - name: Install Build Tools
+      # --- 3. BUILD TOOLS ---
+      - name: Install Build Tools (LLVM & NASM)
         shell: powershell
-        run: |
-          choco install llvm -y
-
-          # NASM manuell laden (Verhindert Download-Fehler in VCPKG)
-          $nasmUrl = "https://www.nasm.us/pub/nasm/releasebuilds/2.16.01/win64/nasm-2.16.01-win64.zip"
-          $nasmZip = "nasm.zip"
-          $nasmDest = "C:\tools"
-          
-          # User-Agent "Mozilla" verhindert 403 Forbidden von nasm.us
-          Invoke-WebRequest -Uri $nasmUrl -OutFile $nasmZip -UserAgent "Mozilla/5.0"
-          
-          Expand-Archive -Path $nasmZip -DestinationPath $nasmDest -Force
-          
-          # Pfad setzen
-          $nasmPath = "$nasmDest\nasm-2.16.01"
-          echo "$nasmPath" >> $env:GITHUB_PATH
-          Write-Host "NASM bereitgestellt in: $nasmPath"
+        run: choco install llvm nasm -y
 
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -153,42 +147,19 @@ jobs:
           flutter-version: '3.24.5'
           channel: 'stable'
 
-      # --- 6. VCPKG (Classic Mode) ---
+      # --- 4. ABHÄNGIGKEITEN (VCPKG CLEAN) ---
       - name: Install vcpkg Dependencies
         shell: bash
         run: |
-          # Manifest deaktivieren -> Classic Mode erzwingen
-          if [ -f "vcpkg.json" ]; then
-             mv vcpkg.json vcpkg.json.bak
-          fi
-
-          # VCPKG Setup
           rm -rf C:/vcpkg
           git clone https://github.com/microsoft/vcpkg C:/vcpkg
           pushd C:/vcpkg
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
           ./bootstrap-vcpkg.bat
           popd
+          C:/vcpkg/vcpkg install --triplet x64-windows-static --x-install-root="C:/vcpkg/installed"
 
-          # Sicherstellen dass NASM gefunden wird
-          nasm -v || echo "WARNUNG: NASM nicht im Pfad gefunden!"
-
-          echo "Installiere Abhängigkeiten..."
-          # VCPKG_KEEP_ENV_VARS sorgt dafür, dass unser NASM genutzt wird
-          C:/vcpkg/vcpkg install \
-            libvpx libyuv opus aom ffmpeg \
-            --triplet x64-windows-static \
-            --recurse
-
-          # Check
-          if [ -f "C:/vcpkg/installed/x64-windows-static/include/libavutil/pixfmt.h" ]; then
-             echo "✅ SUCCESS: Header gefunden!"
-          else
-             echo "❌ FAILURE: Header fehlen!"
-             exit 1
-          fi
-
-      # --- 7. BRIDGE ---
+      # --- 5. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
         shell: bash
         run: |
@@ -202,31 +173,31 @@ jobs:
             --rust-output src/bridge_generated.rs \
             --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 8. BUILD ---
+      # --- 6. KOMPILIEREN (Ohne cargo update!) ---
       - name: Build RustDesk Application
         shell: powershell
         env:
-          INCLUDE: C:\vcpkg\installed\x64-windows-static\include
-          LIB: C:\vcpkg\installed\x64-windows-static\lib
-          LIBPATH: C:\vcpkg\installed\x64-windows-static\lib
+          VCPKG_ROOT: C:\vcpkg
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
         run: |
           Write-Host "Start Build Script..."
           
-          # Sicherstellen, dass Python build.py NASM findet
-          $env:PATH += ";C:\tools\nasm-2.16.01"
-
+          # Wir entfernen 'cargo update', da es Versionen kaputt machen kann.
+          # Wir vertrauen auf die Cargo.lock Datei.
           python build.py --portable --hwcodec --flutter --vram --skip-portable-pack
           
           $sourceDir = "flutter\build\windows\x64\runner\Release"
+          Write-Host "Prüfe auf Build Output in: $sourceDir"
+          
           if (-not (Test-Path $sourceDir)) {
-            Write-Error "FEHLER: Build Output nicht gefunden!"
+            Write-Error "FEHLER: Build Output nicht gefunden! (Compiler abgestürzt)"
             exit 1
           }
           
+          Write-Host "Gefunden! Verschiebe..."
           Move-Item -Path $sourceDir -Destination "rustdesk" -Force
 
-      # --- 9. PACKEN ---
+      # --- 7. PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
@@ -234,13 +205,18 @@ jobs:
           pip install -r requirements.txt
           
           $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { Write-Error "KEINE EXE GEFUNDEN"; exit 1 }
+          if (-not $exeFile) { 
+            Write-Error "KEINE EXE GEFUNDEN"
+            exit 1 
+          }
           
+          Write-Host "Packe EXE: $($exeFile.Name)"
           python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
           Pop-Location
           
           New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
-          $packed = Get-ChildItem -Path "libs/portable" -Filter "*packer.exe" | Select-Object -First 1
+          
+          $packed = Get-ChildItem -Path . -Recurse -Filter "*packer.exe" | Select-Object -First 1
           
           if ($packed) {
               $finalName = "./release_output/${{ secrets.APP_NAME }}_Portable_${{ env.VERSION_TAG }}.exe"
@@ -258,3 +234,4 @@ jobs:
           files: release_output/*.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
