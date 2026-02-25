@@ -159,7 +159,7 @@ jobs:
 
       # --- 5. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
-        shell: bash
+        shell: powershell
         run: |
           cargo install flutter_rust_bridge_codegen --version 1.80.1
           pushd flutter
