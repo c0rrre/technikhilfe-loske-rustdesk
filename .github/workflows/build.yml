@@ -168,6 +168,9 @@ jobs:
       
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
+          .\vcpkg install libvpx:x64-windows-static
+          .\vcpkg install libyuv:x64-windows-static
+          .\vcpkg install libmfx:x64-windows-static
 
       # --- 5. BRIDGE GENERIEREN ---
       - name: Generate Flutter Rust Bridge
