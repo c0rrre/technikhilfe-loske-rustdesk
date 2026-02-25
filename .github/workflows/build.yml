@@ -150,7 +150,7 @@ jobs:
           restore-keys: |
             flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
 
-      # --- 8. VCPKG + DEPENDENCIES + CACHE ---
+      # --- 8a. Setup vcpkg ---
       - name: Setup vcpkg
         shell: powershell
         run: |
@@ -161,26 +161,32 @@ jobs:
           git fetch
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
           .\bootstrap-vcpkg.bat
-
+      
+      # --- 8b. Cache Basis-Pakete (ohne libmfx) ---
       - name: Cache vcpkg installed
         uses: actions/cache@v4
         with:
           path: |
-            C:\vcpkg\installed
-            C:\vcpkg\packages
-          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b
-
+            C:\vcpkg\installed\x64-windows-static\lib
+            C:\vcpkg\installed\x64-windows-static\include
+          key: vcpkg-${{ runner.os }}-120deac3062162151622ca4860575a33844ba10b-basis
+      
+      # --- 8c. Install vcpkg Dependencies ---
       - name: Install vcpkg Dependencies
         shell: powershell
         run: |
           cd C:\vcpkg
+          # Basis-Pakete (werden ggf. aus Cache geladen)
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
-          .\vcpkg install libmfx:x64-windows-static
           .\vcpkg install aom:x64-windows-static
-
+      
+          # Hardware-Codecs immer frisch installieren (keine Cache)
+          .\vcpkg install libmfx:x64-windows-static
+          .\vcpkg install onevpl:x64-windows-static
+      
       # --- 9. PYTHON PIP CACHE (Optional) ---
       - name: Cache Python Pip
         uses: actions/cache@v4
