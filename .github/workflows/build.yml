@@ -162,16 +162,14 @@ jobs:
         shell: powershell
         run: |
           cargo install flutter_rust_bridge_codegen --version 1.80.1
-          pushd flutter
-          flutter pub get
-          popd
-          flutter_rust_bridge_codegen \
-            --rust-input src/flutter_ffi.rs \
-            --dart-output flutter/lib/generated_bridge.dart \
-            --rust-output src/bridge_generated.rs \
-            --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 6. KOMPILIEREN (Ohne cargo update!) ---
+          Push-Location flutter
+          flutter pub get
+          Pop-Location
+      
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
+
+      # --- 6. KOMPILIEREN ---
       - name: Build RustDesk Application
         shell: powershell
         env:
