@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: PREPARE ---
+  # --- JOB 1: PREPARE (Quellcode vorbereiten) ---
   prepare-source:
     name: Prepare Source Code
     runs-on: windows-2022
@@ -25,6 +25,7 @@ jobs:
       - name: Checkout & Merge Repositories
         shell: bash
         run: |
+          echo "1. Klone RustDesk Source..."
           git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
           cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
@@ -35,8 +36,10 @@ jobs:
           git submodule update --init --recursive
           cd ..
           
+          echo "2. Klone Branding Repo..."
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
+          echo "3. Kopiere Dateien..."
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           if [ -d "my_branding_src/BRANDING" ]; then
@@ -102,7 +105,7 @@ jobs:
             target
             vcpkg
 
-  # --- JOB 2: PARALLEL BUILD ---
+  # --- JOB 2: PARALLEL BUILD (Standard & QS) ---
   build-matrix:
     name: Build ${{ matrix.variant }}
     needs: prepare-source
@@ -114,6 +117,7 @@ jobs:
     env:
       FLUTTER_VERSION: '3.24.5'
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+      # Wir pinnen den VCPKG Commit für stabilen Cache
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
       VCPKG_ROOT: C:\vcpkg
       VCPKG_INSTALLATION_ROOT: C:\vcpkg
@@ -128,6 +132,7 @@ jobs:
           name: source-code
           path: .
 
+      # --- TOOLS SETUP ---
       - name: Check and Install Tools
         shell: powershell
         run: |
@@ -156,11 +161,13 @@ jobs:
           cache: true
           cache-key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}
 
+      # --- VCPKG SETUP & CACHE ---
       - name: Restore VCPKG Cache
         id: cache-vcpkg
         uses: actions/cache@v4
         with:
           path: C:\vcpkg
+          # Ein gemeinsamer Cache Key für beide Varianten
           key: vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
           restore-keys: |
              vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
@@ -177,16 +184,20 @@ jobs:
           git fetch
           git reset --hard ${{ env.VCPKG_COMMIT_ID }}
           .\bootstrap-vcpkg.bat
+          
+          # Installieren der Libs
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
           
+          # Clean up um Cache klein zu halten
           Remove-Item -Recurse -Force buildtrees
           Remove-Item -Recurse -Force downloads
           Remove-Item -Recurse -Force packages
 
+      # --- FLUTTER RUST BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
@@ -198,6 +209,7 @@ jobs:
           Pop-Location
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
+      # --- QUICKSUPPORT MODIFIKATIONEN ---
       - name: Apply QuickSupport Mods (Only if QS)
         if: matrix.variant == 'qs'
         shell: bash
@@ -205,18 +217,25 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
+          
+          # 1. Settings Button entfernen (effektive Sperre)
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          
+          # 2. ID fest injizieren
           if [ -n "$QS_TARGET" ]; then
              echo "Setze Ziel-ID auf: $QS_TARGET"
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
+          
           echo "✅ QuickSupport Modifikationen fertig."
 
+      # --- BUILD APPLICATION ---
       - name: Build Application
         shell: powershell
         env:
           CARGO_INCREMENTAL: 1
         run: |
+          # Pfad Fix für Magnum Opus Fehler
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
           $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
           $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
@@ -227,48 +246,60 @@ jobs:
           $destDir = "build_output_${{ matrix.variant }}"
           if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force }
 
+          # Build starten
           python build.py --portable --flutter --skip-portable-pack
           
           $buildDir = "flutter\build\windows\x64\runner\Release"
           
           if (Test-Path "$buildDir\*.exe") {
               Move-Item -Path "$buildDir\*" -Destination $destDir -Force
-              Write-Host "✅ Build erfolgreich."
+              Write-Host "✅ Build erfolgreich verschoben."
           } else {
-              Write-Host "❌ Build fehlgeschlagen."
+              Write-Host "❌ Build fehlgeschlagen: Keine EXE gefunden."
               exit 1
           }
 
+      # --- PACKEN (ROBUST SEARCH) ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
           $srcDir = "../../build_output_${{ matrix.variant }}"
-          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
           
+          # Finde die Quelldatei
+          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $exeFile) { Write-Host "❌ Source EXE missing!"; exit 1 }
           Write-Host "Packing source: $($exeFile.FullName)"
           
+          # Generierung starten
           python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           
-          # Zeige Dateien zur Sicherheit
-          Write-Host "--- Files created ---"
-          Get-ChildItem . | Select-Object Name
+          Write-Host "--- Suche nach generierter Datei ---"
           
-          # FILTER GEÄNDERT auf *packed.exe
-          $packed = Get-ChildItem -Path . -Filter "*packed.exe" | Select-Object -First 1
+          # Strategie 1: Im aktuellen Ordner nach rustdesk.exe suchen
+          $candidate = Get-ChildItem -Path . -Filter "rustdesk.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
           
-          if (-not $packed) {
-             Write-Host "❌ Keine *packed.exe gefunden. Suche Fallback..."
-             # Fallback: Manchmal heißt es nur rustdesk.exe wenn output . ist
-             $packed = Get-ChildItem -Path . -Filter "rustdesk.exe" | Select-Object -First 1
+          # Strategie 2: Fallback Suche im Target Ordner
+          if (-not $candidate) {
+              Write-Host "⚠️ Nicht im Root. Suche rekursiv in target/release..."
+              $candidate = Get-ChildItem -Path "./target/release" -Filter "rustdesk-portable-packer.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          
+          # Strategie 3: Alles mit .exe Endung im aktuellen Ordner (außer packer Tool selbst)
+          if (-not $candidate) {
+             $candidate = Get-ChildItem -Path . -Filter "*.exe" | Where-Object { $_.Name -ne "packer.exe" } | Select-Object -First 1
           }
 
-          if (-not $packed) {
-              Write-Host "❌ CRITICAL: Keine Ausgabedatei gefunden!"
+          if (-not $candidate) {
+              Write-Host "❌ CRITICAL: Keine Output EXE gefunden!"
+              Get-ChildItem -Recurse .
               exit 1
           }
           
+          Write-Host "✅ Gefunden: $($candidate.FullName)"
+          
+          # Dateinamen generieren
           $prefix = "${{ secrets.APP_NAME }}"
           if ("${{ matrix.variant }}" -eq "qs") {
             $finalName = "${prefix}_QuickSupport_${{ env.VERSION_TAG }}.exe"
@@ -276,11 +307,11 @@ jobs:
             $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
           }
           
-          # Move nach ..\.. (Root) für Artifact Upload
-          Move-Item $packed.FullName -Destination "..\..\[$finalName]" -Force
+          # Verschieben ins Root Verzeichnis für Upload
+          Move-Item $candidate.FullName -Destination "..\..\[$finalName]" -Force
           Pop-Location
           
-          Write-Host "Final executable ready: $finalName"
+          Write-Host "Artifact ready at: $finalName"
           echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
