@@ -1,4 +1,4 @@
-name: RustDesk Builder
+name: RustDesk Builder (Production Syntax Fix)
 
 on:
   push:
@@ -242,22 +242,31 @@ jobs:
       - name: Pack Portable Executable
         shell: powershell
         env:
+          # ÜBERGABE ALLER VARIABLEN ALS ENV-VARS
           MY_APP_NAME: ${{ secrets.APP_NAME }}
           MY_VERSION_TAG: ${{ env.VERSION_TAG }}
+          VARIANT: ${{ matrix.variant }}
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
           
-          $root = Resolve-Path "../.."
-          $srcDir = Join-Path $root "build_output_${{ matrix.variant }}"
+          # Sicherer Pfad-Umgang
+          $root = (Resolve-Path "../..").Path
+          $srcDir = Join-Path $root "build_output_$($env:VARIANT)"
           
           $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
           if (-not $exeFile) { Write-Host "❌ Source EXE missing!"; exit 1 }
           
           Write-Host "Packing source: $($exeFile.FullName)"
           
-          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
+          # Argumente vorbereiten um Quoting-Fehler zu vermeiden
+          $argSrc = "$srcDir\"
+          $argExe = $exeFile.Name
           
+          # Python Pack Script
+          python generate.py -f $argSrc -o . -e $argExe
+          
+          # Rust Build
           Write-Host "🔨 Compiling Portable Packer..."
           cargo build --release
           
@@ -273,8 +282,9 @@ jobs:
           
           Write-Host "✅ Gefunden: $($candidate.FullName)"
           
+          # Name generieren (Pure PowerShell logic)
           $prefix = $env:MY_APP_NAME
-          if ("${{ matrix.variant }}" -eq "qs") {
+          if ($env:VARIANT -eq "qs") {
             $finalName = "${prefix}_QuickSupport_$($env:MY_VERSION_TAG).exe"
           } else {
             $finalName = "${prefix}_Portable_$($env:MY_VERSION_TAG).exe"
@@ -285,8 +295,9 @@ jobs:
           
           Write-Host "Artifact ready at: $destPath"
           
-          # Fix: Out-File statt Add-Content und keine komischen Quotes
-          "ARTIFACT_PATH=$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Sicherstes Schreiben in GITHUB_ENV
+          $envContent = "ARTIFACT_PATH=$finalName"
+          Add-Content -Path $env:GITHUB_ENV -Value $envContent
           
           Pop-Location
 
