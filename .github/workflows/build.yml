@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: QUELLCODE VORBEREITEN ---
+  # --- JOB 1: PREPARE (Schnell, kaum Cache nötig) ---
   prepare-source:
     name: Prepare Source Code
     runs-on: windows-2022
@@ -102,7 +102,7 @@ jobs:
             target
             vcpkg
 
-  # --- JOB 2: PARALLELER BUILD (MATRIX) ---
+  # --- JOB 2: PARALLEL BUILD (SMART CACHING) ---
   build-matrix:
     name: Build ${{ matrix.variant }}
     needs: prepare-source
@@ -118,6 +118,8 @@ jobs:
       VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
       FLUTTER_VERSION: '3.24.5'
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+      # Wir definieren den VCPKG Commit hier fest, damit der Cache Key stabil bleibt
+      VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
     
     steps:
       - name: Download Prepared Source
@@ -126,76 +128,83 @@ jobs:
           name: source-code
           path: .
 
-      - name: Install Build Tools (LLVM & NASM)
+      # --- SCHRITT 1: TOOLS (LLVM / NASM) ---
+      # Wir prüfen erst, ob die Pfade existieren, bevor wir Chocolatey bemühen.
+      - name: Check and Install Tools
         shell: powershell
-        run: choco install llvm nasm -y
+        run: |
+          $llvm = Test-Path "C:\Program Files\LLVM\bin"
+          $nasm = Get-Command nasm -ErrorAction SilentlyContinue
+          if (-not $llvm -or -not $nasm) {
+             Write-Host "Tools missing. Installing..."
+             choco install llvm nasm -y
+          } else {
+             Write-Host "✅ LLVM and NASM already installed. Skipping."
+          }
 
       - name: Setup MSVC Dev Environment
         uses: ilammy/msvc-dev-cmd@v1
 
+      # --- SCHRITT 2: RUST CACHE ---
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust Target
-        uses: actions/cache@v4
+      # swatinem/rust-cache ist intelligenter als der Standard-Cache.
+      # Er hasht die Cargo.lock und cached den 'target' Ordner automatisch.
+      # Wenn Dependencies gleich bleiben, ist der Restore extrem schnell.
+      - name: Rust Cache
+        uses: swatinem/rust-cache@v2
         with:
-          path: |
-            target
-            ~/.cargo/registry
-            ~/.cargo/git
-          key: rustdesk-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            rustdesk-${{ runner.os }}-
+          key: ${{ matrix.variant }} # Separate Caches für Standard/QS um Locking-Probleme zu vermeiden
 
+      # --- SCHRITT 3: FLUTTER CACHE ---
+      # Die Action selbst hat eingebautes Caching für das SDK
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
+          cache: true # Aktiviert den Cache für das Flutter SDK
+          cache-key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}
 
-      - name: Cache Flutter
+      # --- SCHRITT 4: VCPKG CACHE (Der wichtigste Teil) ---
+      # Wir cachen C:\vcpkg komplett. Key ist OS + Commit-ID.
+      - name: Restore VCPKG Cache
+        id: cache-vcpkg
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.pub-cache
-            flutter/.dart_tool
-          key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-${{ hashFiles('flutter/pubspec.lock') }}
-          restore-keys: |
-            flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
-
-      - name: Setup vcpkg
+          path: C:\vcpkg
+          key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}-full
+      
+      # Dieser Schritt läuft NUR, wenn der Cache NICHT gefunden wurde.
+      - name: Install VCPKG (If not cached)
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         shell: powershell
         run: |
+          Write-Host "Cache miss. Installing VCPKG from scratch..."
           if (!(Test-Path "C:\vcpkg")) {
             git clone https://github.com/microsoft/vcpkg C:\vcpkg
           }
           cd C:\vcpkg
           git fetch
-          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          git reset --hard ${{ env.VCPKG_COMMIT_ID }}
           .\bootstrap-vcpkg.bat
-
-      - name: Cache vcpkg installed
-        uses: actions/cache@v4
-        with:
-          path: |
-            C:\vcpkg\installed\x64-windows-static\lib
-            C:\vcpkg\installed\x64-windows-static\include
-          key: vcpkg-${{ runner.os }}-120deac3062162151622ca224860575a33844ba10b-basis
-
-      - name: Install vcpkg Dependencies
-        shell: powershell
-        run: |
-          cd C:\vcpkg
+          
+          # Installieren der Libs
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
 
+      # --- SCHRITT 5: BUILD VORBEREITUNG ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
-          cargo install flutter_rust_bridge_codegen --version 1.80.1
+          # Prüfen ob codegen schon da ist, spart Zeit
+          if (-not (Get-Command flutter_rust_bridge_codegen -ErrorAction SilentlyContinue)) {
+             cargo install flutter_rust_bridge_codegen --version 1.80.1
+          }
           Push-Location flutter
           flutter pub get
           Pop-Location
@@ -215,12 +224,15 @@ jobs:
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
           echo "✅ QuickSupport Modifikationen fertig."
 
+      # --- SCHRITT 6: BUILD (INKREMENTELL) ---
+      # Cargo wird dank rust-cache nur die geänderten Teile kompilieren.
+      # Flutter muss bauen, da wir den Code geändert haben (Branding/Mods).
       - name: Build Application
         shell: powershell
         env:
           VCPKG_ROOT: C:\vcpkg
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
-          CARGO_INCREMENTAL: 0
+          CARGO_INCREMENTAL: 1 # Aktiviert für schnelleren Rebuild
         run: |
           python build.py --portable --flutter --skip-portable-pack
           
@@ -229,6 +241,7 @@ jobs:
           New-Item -ItemType Directory -Path $destDir -Force
           Move-Item -Path "$buildDir\*" -Destination $destDir -Force
 
+      # --- SCHRITT 7: PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
@@ -249,7 +262,6 @@ jobs:
             $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
           }
           
-          # Move to ROOT for easy upload
           Move-Item $packed.FullName -Destination ".\$finalName" -Force
           echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
 
