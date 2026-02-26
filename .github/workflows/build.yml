@@ -241,11 +241,13 @@ jobs:
 
       - name: Pack Portable Executable
         shell: powershell
+        env:
+          MY_APP_NAME: ${{ secrets.APP_NAME }}
+          MY_VERSION_TAG: ${{ env.VERSION_TAG }}
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
           
-          # Root Pfad (Absolut)
           $root = Resolve-Path "../.."
           $srcDir = Join-Path $root "build_output_${{ matrix.variant }}"
           
@@ -254,14 +256,11 @@ jobs:
           
           Write-Host "Packing source: $($exeFile.FullName)"
           
-          # 1. Daten packen
           python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           
-          # 2. EXE kompilieren
           Write-Host "🔨 Compiling Portable Packer..."
           cargo build --release
           
-          # 3. Ergebnis suchen
           Write-Host "--- Suche nach generierter EXE ---"
           $targetDir = "target/release"
           $candidate = Get-ChildItem -Path $targetDir -Filter "*.exe" | Where-Object { $_.Name -ne "packer.exe" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
@@ -274,19 +273,20 @@ jobs:
           
           Write-Host "✅ Gefunden: $($candidate.FullName)"
           
-          $prefix = "${{ secrets.APP_NAME }}"
+          $prefix = $env:MY_APP_NAME
           if ("${{ matrix.variant }}" -eq "qs") {
-            $finalName = "${prefix}_QuickSupport_${{ env.VERSION_TAG }}.exe"
+            $finalName = "${prefix}_QuickSupport_$($env:MY_VERSION_TAG).exe"
           } else {
-            $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
+            $finalName = "${prefix}_Portable_$($env:MY_VERSION_TAG).exe"
           }
           
-          # Zielpfad
           $destPath = Join-Path $root $finalName
           Move-Item -LiteralPath $candidate.FullName -Destination $destPath -Force
           
           Write-Host "Artifact ready at: $destPath"
-          Add-Content -Path $env:GITHUB_ENV -Value "ARTIFACT_PATH=$finalName"
+          
+          # Fix: Out-File statt Add-Content und keine komischen Quotes
+          "ARTIFACT_PATH=$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           
           Pop-Location
 
