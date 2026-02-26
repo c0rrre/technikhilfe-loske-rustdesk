@@ -15,61 +15,47 @@ permissions:
   contents: write
 
 jobs:
-  build-portable:
-    name: Build Windows Portable
+  # --- JOB 1: QUELLCODE VORBEREITEN ---
+  prepare-source:
+    name: Prepare Source Code
     runs-on: windows-2022
-    env:
-      # Globale Variablen
-      LIBCLANG_PATH: C:\Program Files\LLVM\bin
-      LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      VCPKG_ROOT: C:\vcpkg
-      # WICHTIG: Damit VCPKG unsere manuell installierten Tools (NASM) findet!
-      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
-    
+    outputs:
+      version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
     steps:
-      # --- 1. ZUSAMMENFÜHREN DER REPOS ---
       - name: Checkout & Merge Repositories
         shell: bash
         run: |
-          echo "1. Klone RustDesk Source (RECURSIVE)..."
           git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
-          
           cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             REF="${{ github.ref_name }}"
           fi
-          echo "Checke Version aus: $REF"
           git checkout "$REF" || git checkout master
           git submodule update --init --recursive
           cd ..
-
-          echo "2. Klone Branding Repo..."
+          
+          # Branding Repo holen
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
-          echo "3. Verschiebe Dateien ins Hauptverzeichnis..."
+          # Zusammenführen
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           if [ -d "my_branding_src/BRANDING" ]; then
              cp -r my_branding_src/BRANDING .
-             echo "✅ BRANDING Dateien platziert."
           fi
           rm -rf rustdesk_src my_branding_src
-          ls -F libs/hbb_common/
 
-      # --- 2. ENVIRONMENT VARIABLES ---
-      - name: Setup Environment Variables
+      - name: Set Version Variables
+        id: vars
         shell: bash
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
           DATE=$(date +'%Y-%m-%d-%H-%M')
           VERSION_TAG="${VERSION}-${DATE}"
-          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_ENV
-          echo "FLUTTER_VERSION=3.24.5" >> $GITHUB_ENV
-          echo "Generated VERSION_TAG=${VERSION_TAG}"
+          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
 
-      # --- 3. BRANDING ---
-      - name: Apply Custom Branding
+      - name: Apply Branding (Common)
         shell: bash
         env:
           MY_APP_NAME: ${{ secrets.APP_NAME }}
@@ -82,15 +68,13 @@ jobs:
           fi
           if [ -f "logo.png" ]; then
              mkdir -p flutter/assets/images
-             cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
-             find flutter -name "logo.png" -exec cp "logo.png" {} + || true
+             cp "BRANDING/logo.png" "flutter/assets/images/logo.png" || true
           fi
           if [ -f "app_icon.ico" ]; then
              mkdir -p flutter/windows/runner/resources
-             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico" || true
           fi
 
-      # --- 4. SERVER CONFIGURATION ---
       - name: Inject Server Configuration
         shell: bash
         env:
@@ -110,7 +94,42 @@ jobs:
             fi
           done
 
-      # --- 5. BUILD TOOLS ---
+      - name: Upload Prepared Source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-code
+          path: .
+          # Wir excludieren schwere Ordner, um den Transfer zu beschleunigen
+          exclude: |
+            .git
+            target
+            vcpkg
+
+  # --- JOB 2: PARALLELER BUILD (MATRIX) ---
+  build-matrix:
+    name: Build ${{ matrix.variant }}
+    needs: prepare-source
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [standard, qs]
+    env:
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      LLVM_INSTALL_PATH: C:\Program Files\LLVM
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
+      FLUTTER_VERSION: '3.24.5'
+      VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+    
+    steps:
+      - name: Download Prepared Source
+        uses: actions/download-artifact@v4
+        with:
+          name: source-code
+          path: .
+
+      # System Tools müssen pro Runner installiert werden
       - name: Install Build Tools (LLVM & NASM)
         shell: powershell
         run: choco install llvm nasm -y
@@ -121,7 +140,7 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # --- 6. RUST/CARGO CACHE ---
+      # Caches laden (geteilt zwischen Jobs)
       - name: Cache Rust Target
         uses: actions/cache@v4
         with:
@@ -133,11 +152,10 @@ jobs:
           restore-keys: |
             rustdesk-${{ runner.os }}-
 
-      # --- 7. FLUTTER ---
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
 
       - name: Cache Flutter
@@ -150,7 +168,6 @@ jobs:
           restore-keys: |
             flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}-
 
-      # --- 8a. Setup vcpkg ---
       - name: Setup vcpkg
         shell: powershell
         run: |
@@ -161,8 +178,7 @@ jobs:
           git fetch
           git reset --hard 120deac3062162151622ca4860575a33844ba10b
           .\bootstrap-vcpkg.bat
-      
-      # --- 8b. Cache Basis-Pakete (ohne libmfx) ---
+
       - name: Cache vcpkg installed
         uses: actions/cache@v4
         with:
@@ -170,28 +186,17 @@ jobs:
             C:\vcpkg\installed\x64-windows-static\lib
             C:\vcpkg\installed\x64-windows-static\include
           key: vcpkg-${{ runner.os }}-120deac3062162151622ca224860575a33844ba10b-basis
-      
-      # --- 8c. Install vcpkg Dependencies ---
+
       - name: Install vcpkg Dependencies
         shell: powershell
         run: |
           cd C:\vcpkg
-          # Basis-Pakete (werden ggf. aus Cache geladen)
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
-      
-      # --- 9. PYTHON PIP CACHE (Optional) ---
-      - name: Cache Python Pip
-        uses: actions/cache@v4
-        with:
-          path: C:\Users\runneradmin\AppData\Local\pip\Cache
-          key: pip-${{ runner.os }}-${{ hashFiles('libs/portable/requirements.txt') }}
-          restore-keys: pip-${{ runner.os }}-
 
-      # --- 10. GENERATE BRIDGE ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
@@ -201,8 +206,29 @@ jobs:
           Pop-Location
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- 11. BUILD APPLICATION ---
-      - name: Build RustDesk Application
+      # --- SPEZIFISCHE LOGIK FÜR QUICKSUPPORT ---
+      - name: Apply QuickSupport Mods (Only if QS)
+        if: matrix.variant == 'qs'
+        shell: bash
+        env:
+          QS_TARGET: ${{ secrets.QS_TARGET_ID }}
+        run: |
+          echo "🔧 Wende QuickSupport Modifikationen an..."
+          
+          # 1. SETTINGS BUTTON ENTFERNEN
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          
+          # 2. FESTE ID EINBAUEN & EDITIEREN SPERREN
+          if [ -n "$QS_TARGET" ]; then
+             find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
+          fi
+          # ReadOnly erzwingen
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
+          
+          echo "✅ QuickSupport Modifikationen fertig."
+
+      # --- BUILD ---
+      - name: Build Application
         shell: powershell
         env:
           VCPKG_ROOT: C:\vcpkg
@@ -210,44 +236,65 @@ jobs:
           CARGO_INCREMENTAL: 0
         run: |
           python build.py --portable --flutter --skip-portable-pack
-          $sourceDir = "flutter\build\windows\x64\runner\Release"
-          if (-not (Test-Path $sourceDir)) { exit 1 }
-          Move-Item -Path $sourceDir -Destination "rustdesk" -Force
+          
+          # Ordner vorbereiten für Packer
+          $buildDir = "flutter\build\windows\x64\runner\Release"
+          $destDir = "build_output_${{ matrix.variant }}"
+          New-Item -ItemType Directory -Path $destDir -Force
+          Move-Item -Path "$buildDir\*" -Destination $destDir -Force
 
-      # --- 12. CHECK HARDWARE ENCODER STATUS ---
-      - name: Check Hardware Encoder Status
-        shell: powershell
-        run: |
-          function Check($name, $condition) {
-            if ($condition) { Write-Host "✅ $name" } else { Write-Host "❌ $name" }
-          }
-          Check "NVIDIA NVENC" (Test-Path "C:\Program Files\NVIDIA GPU Computing Toolkit")
-          Check "AMD AMF (via FFmpeg)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\avcodec.lib")
-          Check "Intel QSV (oneVPL)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpl.lib")
-          Check "VP8/VP9 (libvpx)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib")
-          Check "AV1 (AOM)" (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\aom.lib")
-
-      # --- 13. PACK PORTABLE EXECUTABLE ---
+      # --- PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
           Push-Location ./libs/portable
           pip install -r requirements.txt
-          $exeFile = Get-ChildItem -Path "../../rustdesk" -Filter "*.exe" | Select-Object -First 1
-          python generate.py -f "../../rustdesk/" -o . -e "$($exeFile.Name)"
+          $srcDir = "../../build_output_${{ matrix.variant }}"
+          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
+          
+          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           Pop-Location
-          New-Item -ItemType Directory -Path "release_output" -Force | Out-Null
-          $packed = Get-ChildItem -Path . -Recurse -Filter "*packer.exe" | Select-Object -First 1
-          if ($packed) {
-              $finalName = "./release_output/${{ secrets.APP_NAME }}_Portable_${{ env.VERSION_TAG }}.exe"
-              Move-Item $packed.FullName $finalName -Force
-          } else { exit 1 }
+          
+          $packed = Get-ChildItem -Path ./libs/portable -Recurse -Filter "*packer.exe" | Select-Object -First 1
+          
+          # Umbenennen für Upload
+          $prefix = "${{ secrets.APP_NAME }}"
+          if ("${{ matrix.variant }}" -eq "qs") {
+            $finalName = "${prefix}_QuickSupport_${{ env.VERSION_TAG }}.exe"
+          } else {
+            $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
+          }
+          Move-Item $packed.FullName $finalName -Force
+          echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
 
-      # --- 14. PUBLISH RELEASE ---
-      - name: Publish Release
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exe-${{ matrix.variant }}
+          path: ${{ env.ARTIFACT_PATH }}
+
+  # --- JOB 3: RELEASE ---
+  release:
+    name: Publish Release
+    needs: [prepare-source, build-matrix]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Standard Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: exe-standard
+          path: .
+
+      - name: Download QS Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: exe-qs
+          path: .
+
+      - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          tag_name: ${{ env.VERSION_TAG }}
-          files: release_output/*.exe
+          tag_name: ${{ needs.prepare-source.outputs.version_tag }}
+          files: *.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
