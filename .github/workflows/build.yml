@@ -245,26 +245,30 @@ jobs:
           Push-Location ./libs/portable
           pip install -r requirements.txt
           
-          $srcDir = "../../build_output_${{ matrix.variant }}"
+          # Root Pfad (Absolut)
+          $root = Resolve-Path "../.."
+          $srcDir = Join-Path $root "build_output_${{ matrix.variant }}"
+          
           $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
           if (-not $exeFile) { Write-Host "❌ Source EXE missing!"; exit 1 }
           
           Write-Host "Packing source: $($exeFile.FullName)"
           
-          # 1. Daten vorbereiten
+          # 1. Daten packen
           python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           
-          # 2. Packer kompilieren (Rust build trigger)
+          # 2. EXE kompilieren
           Write-Host "🔨 Compiling Portable Packer..."
           cargo build --release
           
           # 3. Ergebnis suchen
           Write-Host "--- Suche nach generierter EXE ---"
-          $candidate = Get-ChildItem -Path "./target/release" -Filter "*.exe" | Where-Object { $_.Name -ne "packer.exe" } | Select-Object -First 1
+          $targetDir = "target/release"
+          $candidate = Get-ChildItem -Path $targetDir -Filter "*.exe" | Where-Object { $_.Name -ne "packer.exe" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           
           if (-not $candidate) {
-              Write-Host "❌ CRITICAL: Keine Output EXE in target/release gefunden!"
-              Get-ChildItem -Recurse
+              Write-Host "❌ CRITICAL: Keine Output EXE in $targetDir gefunden!"
+              Get-ChildItem $targetDir -Recurse
               exit 1
           }
           
@@ -277,11 +281,14 @@ jobs:
             $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
           }
           
-          Move-Item $candidate.FullName -Destination "..\..\[$finalName]" -Force
-          Pop-Location
+          # Zielpfad
+          $destPath = Join-Path $root $finalName
+          Move-Item -LiteralPath $candidate.FullName -Destination $destPath -Force
           
-          Write-Host "Artifact ready at: $finalName"
-          echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
+          Write-Host "Artifact ready at: $destPath"
+          Add-Content -Path $env:GITHUB_ENV -Value "ARTIFACT_PATH=$finalName"
+          
+          Pop-Location
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
