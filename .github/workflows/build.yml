@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: PREPARE (Schnell, Code vorbereiten) ---
+  # --- JOB 1: PREPARE (Code vorbereiten) ---
   prepare-source:
     name: Prepare Source Code
     runs-on: windows-2022
@@ -105,7 +105,7 @@ jobs:
             target
             vcpkg
 
-  # --- JOB 2: PARALLEL BUILD (SMART CACHING) ---
+  # --- JOB 2: PARALLEL BUILD (FIXED VCPKG PATHS) ---
   build-matrix:
     name: Build ${{ matrix.variant }}
     needs: prepare-source
@@ -117,11 +117,15 @@ jobs:
     env:
       FLUTTER_VERSION: '3.24.5'
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
-      # Festgelegter Commit für VCPKG Cache Konsistenz
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+      
+      # --- FIX: ÜBERSCHREIBEN DER STANDARD PFADE ---
+      # GitHub Actions setzt VCPKG_INSTALLATION_ROOT oft auf Visual Studio.
+      # Wir erzwingen C:\vcpkg für beide Variablen.
       VCPKG_ROOT: C:\vcpkg
+      VCPKG_INSTALLATION_ROOT: C:\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
-      # Sicherstellen, dass LLVM gefunden wird
+      
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
       LLVM_INSTALL_PATH: C:\Program Files\LLVM
     
@@ -132,7 +136,7 @@ jobs:
           name: source-code
           path: .
 
-      # --- SCHRITT 1: TOOLS (LLVM / NASM) ---
+      # --- SCHRITT 1: TOOLS ---
       - name: Check and Install Tools
         shell: powershell
         run: |
@@ -204,7 +208,7 @@ jobs:
           Pop-Location
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- SCHRITT 6: QUICKSUPPORT MODS (Fix applied) ---
+      # --- SCHRITT 6: QUICKSUPPORT MODS ---
       - name: Apply QuickSupport Mods (Only if QS)
         if: matrix.variant == 'qs'
         shell: bash
@@ -212,32 +216,38 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
-          
-          # 1. SETTINGS BUTTON ENTFERNEN
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
-          
-          # 2. FESTE ID EINBAUEN (Falls vorhanden)
           if [ -n "$QS_TARGET" ]; then
              echo "Setze Ziel-ID auf: $QS_TARGET"
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
-          
-          # HINWEIS: Der 'readOnly'-Hack wurde entfernt, da er den Build zerstörte.
-          # Die ID ist nun fest eingetragen, aber das Feld ist technisch gesehen noch editierbar.
-          # Da aber Settings fehlen und die ID vorausgefüllt ist, reicht das meistens.
-          
           echo "✅ QuickSupport Modifikationen fertig."
 
-      # --- SCHRITT 7: BUILD ---
+      # --- SCHRITT 7: BUILD (MIT PFAD FIX) ---
       - name: Build Application
         shell: powershell
         env:
           CARGO_INCREMENTAL: 1
         run: |
+          # --- FIX: PFADE EXPLIZIT SETZEN ---
+          # Wir erzwingen die Aufnahme der VCPKG Include-Pfade in die Umgebungsvariablen
+          # damit der Compiler magnum-opus (opus.h) sicher findet.
+          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
+          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
+          
+          $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
+          $env:LIB = "$vcpkgLib;$env:LIB"
+          $env:VCPKG_ROOT = "C:\vcpkg"
+          $env:VCPKG_INSTALLATION_ROOT = "C:\vcpkg"
+          
+          Write-Host "VCPKG_ROOT: $env:VCPKG_ROOT"
+          Write-Host "INCLUDE PATH: $env:INCLUDE"
+
+          # Ordner erstellen
           $destDir = "build_output_${{ matrix.variant }}"
           if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force }
 
-          # Der eigentliche Build Befehl
+          # Build starten
           python build.py --portable --flutter --skip-portable-pack
           
           $buildDir = "flutter\build\windows\x64\runner\Release"
