@@ -1,4 +1,4 @@
-name: RustDesk Builder (Production Syntax Fix)
+name: RustDesk Builder
 
 on:
   push:
@@ -239,67 +239,66 @@ jobs:
               exit 1
           }
 
+      # --- SCHRITT 8: PACKEN (BASH VERSION) ---
+      # Bash ist viel stabiler für String-Operationen und Env-Vars
       - name: Pack Portable Executable
-        shell: powershell
+        shell: bash
         env:
-          # ÜBERGABE ALLER VARIABLEN ALS ENV-VARS
           MY_APP_NAME: ${{ secrets.APP_NAME }}
           MY_VERSION_TAG: ${{ env.VERSION_TAG }}
           VARIANT: ${{ matrix.variant }}
         run: |
-          Push-Location ./libs/portable
+          cd libs/portable
           pip install -r requirements.txt
           
-          # Sicherer Pfad-Umgang
-          $root = (Resolve-Path "../..").Path
-          $srcDir = Join-Path $root "build_output_$($env:VARIANT)"
+          # Pfad zum Quell-Ordner (Relativ, Windows Bash versteht ../..)
+          SRC_DIR="../../build_output_${VARIANT}"
           
-          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { Write-Host "❌ Source EXE missing!"; exit 1 }
+          # Finde die Source EXE
+          EXE_FILE=$(find "$SRC_DIR" -maxdepth 1 -name "*.exe" | head -n 1)
           
-          Write-Host "Packing source: $($exeFile.FullName)"
+          if [ -z "$EXE_FILE" ]; then
+              echo "❌ Source EXE missing in $SRC_DIR"
+              exit 1
+          fi
           
-          # Argumente vorbereiten um Quoting-Fehler zu vermeiden
-          $argSrc = "$srcDir\"
-          $argExe = $exeFile.Name
+          EXE_NAME=$(basename "$EXE_FILE")
+          echo "Packing source: $EXE_FILE ($EXE_NAME)"
           
-          # Python Pack Script
-          python generate.py -f $argSrc -o . -e $argExe
+          # Generate Data
+          # Bash auf Windows: Pfade in Quotes setzen.
+          python generate.py -f "$SRC_DIR/" -o . -e "$EXE_NAME"
           
-          # Rust Build
-          Write-Host "🔨 Compiling Portable Packer..."
+          echo "🔨 Compiling Portable Packer..."
           cargo build --release
           
-          Write-Host "--- Suche nach generierter EXE ---"
-          $targetDir = "target/release"
-          $candidate = Get-ChildItem -Path $targetDir -Filter "*.exe" | Where-Object { $_.Name -ne "packer.exe" } | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          echo "--- Suche nach generierter EXE ---"
+          # Suche die neueste EXE im target ordner, die nicht packer.exe heißt
+          # ls -t sortiert nach Zeit (neueste zuerst)
+          CANDIDATE=$(ls -t target/release/*.exe | grep -v "packer.exe" | head -n 1)
           
-          if (-not $candidate) {
-              Write-Host "❌ CRITICAL: Keine Output EXE in $targetDir gefunden!"
-              Get-ChildItem $targetDir -Recurse
+          if [ -z "$CANDIDATE" ]; then
+              echo "❌ CRITICAL: Keine Output EXE in target/release gefunden!"
+              ls -R target/release
               exit 1
-          }
+          fi
           
-          Write-Host "✅ Gefunden: $($candidate.FullName)"
+          echo "✅ Gefunden: $CANDIDATE"
           
-          # Name generieren (Pure PowerShell logic)
-          $prefix = $env:MY_APP_NAME
-          if ($env:VARIANT -eq "qs") {
-            $finalName = "${prefix}_QuickSupport_$($env:MY_VERSION_TAG).exe"
-          } else {
-            $finalName = "${prefix}_Portable_$($env:MY_VERSION_TAG).exe"
-          }
+          # Neuen Namen bauen
+          if [ "$VARIANT" == "qs" ]; then
+              FINAL_NAME="${MY_APP_NAME}_QuickSupport_${MY_VERSION_TAG}.exe"
+          else
+              FINAL_NAME="${MY_APP_NAME}_Portable_${MY_VERSION_TAG}.exe"
+          fi
           
-          $destPath = Join-Path $root $finalName
-          Move-Item -LiteralPath $candidate.FullName -Destination $destPath -Force
+          # Verschieben ins Root Verzeichnis
+          mv "$CANDIDATE" "../../$FINAL_NAME"
           
-          Write-Host "Artifact ready at: $destPath"
+          echo "Artifact ready at: $FINAL_NAME"
           
-          # Sicherstes Schreiben in GITHUB_ENV
-          $envContent = "ARTIFACT_PATH=$finalName"
-          Add-Content -Path $env:GITHUB_ENV -Value $envContent
-          
-          Pop-Location
+          # GITHUB_ENV schreiben (Bash Syntax ist hier sehr sauber)
+          echo "ARTIFACT_PATH=$FINAL_NAME" >> $GITHUB_ENV
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
