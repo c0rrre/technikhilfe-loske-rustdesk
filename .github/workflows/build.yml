@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: PREPARE (Schnell, kaum Cache nötig) ---
+  # --- JOB 1: PREPARE (Schnell, Code vorbereiten) ---
   prepare-source:
     name: Prepare Source Code
     runs-on: windows-2022
@@ -25,6 +25,7 @@ jobs:
       - name: Checkout & Merge Repositories
         shell: bash
         run: |
+          echo "1. Klone RustDesk Source..."
           git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
           cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
@@ -35,8 +36,10 @@ jobs:
           git submodule update --init --recursive
           cd ..
           
+          echo "2. Klone Branding Repo..."
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
+          echo "3. Kopiere Dateien..."
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           if [ -d "my_branding_src/BRANDING" ]; then
@@ -112,14 +115,15 @@ jobs:
       matrix:
         variant: [standard, qs]
     env:
-      LIBCLANG_PATH: C:\Program Files\LLVM\bin
-      LLVM_INSTALL_PATH: C:\Program Files\LLVM
-      VCPKG_ROOT: C:\vcpkg
-      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
       FLUTTER_VERSION: '3.24.5'
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
-      # Wir definieren den VCPKG Commit hier fest, damit der Cache Key stabil bleibt
+      # Festgelegter Commit für VCPKG Cache Konsistenz
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+      # Sicherstellen, dass LLVM gefunden wird
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      LLVM_INSTALL_PATH: C:\Program Files\LLVM
     
     steps:
       - name: Download Prepared Source
@@ -129,17 +133,16 @@ jobs:
           path: .
 
       # --- SCHRITT 1: TOOLS (LLVM / NASM) ---
-      # Wir prüfen erst, ob die Pfade existieren, bevor wir Chocolatey bemühen.
       - name: Check and Install Tools
         shell: powershell
         run: |
           $llvm = Test-Path "C:\Program Files\LLVM\bin"
           $nasm = Get-Command nasm -ErrorAction SilentlyContinue
           if (-not $llvm -or -not $nasm) {
-             Write-Host "Tools missing. Installing..."
+             Write-Host "Installing missing tools..."
              choco install llvm nasm -y
           } else {
-             Write-Host "✅ LLVM and NASM already installed. Skipping."
+             Write-Host "✅ Tools already installed."
           }
 
       - name: Setup MSVC Dev Environment
@@ -149,26 +152,21 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # swatinem/rust-cache ist intelligenter als der Standard-Cache.
-      # Er hasht die Cargo.lock und cached den 'target' Ordner automatisch.
-      # Wenn Dependencies gleich bleiben, ist der Restore extrem schnell.
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.variant }} # Separate Caches für Standard/QS um Locking-Probleme zu vermeiden
+          key: ${{ matrix.variant }}
 
       # --- SCHRITT 3: FLUTTER CACHE ---
-      # Die Action selbst hat eingebautes Caching für das SDK
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: 'stable'
-          cache: true # Aktiviert den Cache für das Flutter SDK
+          cache: true
           cache-key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}
 
-      # --- SCHRITT 4: VCPKG CACHE (Der wichtigste Teil) ---
-      # Wir cachen C:\vcpkg komplett. Key ist OS + Commit-ID.
+      # --- SCHRITT 4: VCPKG CACHE ---
       - name: Restore VCPKG Cache
         id: cache-vcpkg
         uses: actions/cache@v4
@@ -176,12 +174,11 @@ jobs:
           path: C:\vcpkg
           key: vcpkg-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}-full
       
-      # Dieser Schritt läuft NUR, wenn der Cache NICHT gefunden wurde.
       - name: Install VCPKG (If not cached)
         if: steps.cache-vcpkg.outputs.cache-hit != 'true'
         shell: powershell
         run: |
-          Write-Host "Cache miss. Installing VCPKG from scratch..."
+          Write-Host "Cache miss. Installing VCPKG..."
           if (!(Test-Path "C:\vcpkg")) {
             git clone https://github.com/microsoft/vcpkg C:\vcpkg
           }
@@ -189,19 +186,16 @@ jobs:
           git fetch
           git reset --hard ${{ env.VCPKG_COMMIT_ID }}
           .\bootstrap-vcpkg.bat
-          
-          # Installieren der Libs
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
 
-      # --- SCHRITT 5: BUILD VORBEREITUNG ---
+      # --- SCHRITT 5: BRIDGE GEN ---
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
-          # Prüfen ob codegen schon da ist, spart Zeit
           if (-not (Get-Command flutter_rust_bridge_codegen -ErrorAction SilentlyContinue)) {
              cargo install flutter_rust_bridge_codegen --version 1.80.1
           }
@@ -210,6 +204,7 @@ jobs:
           Pop-Location
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
+      # --- SCHRITT 6: QUICKSUPPORT MODS (Fix applied) ---
       - name: Apply QuickSupport Mods (Only if QS)
         if: matrix.variant == 'qs'
         shell: bash
@@ -217,31 +212,45 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
+          
+          # 1. SETTINGS BUTTON ENTFERNEN
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          
+          # 2. FESTE ID EINBAUEN (Falls vorhanden)
           if [ -n "$QS_TARGET" ]; then
+             echo "Setze Ziel-ID auf: $QS_TARGET"
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
+          
+          # HINWEIS: Der 'readOnly'-Hack wurde entfernt, da er den Build zerstörte.
+          # Die ID ist nun fest eingetragen, aber das Feld ist technisch gesehen noch editierbar.
+          # Da aber Settings fehlen und die ID vorausgefüllt ist, reicht das meistens.
+          
           echo "✅ QuickSupport Modifikationen fertig."
 
-      # --- SCHRITT 6: BUILD (INKREMENTELL) ---
-      # Cargo wird dank rust-cache nur die geänderten Teile kompilieren.
-      # Flutter muss bauen, da wir den Code geändert haben (Branding/Mods).
+      # --- SCHRITT 7: BUILD ---
       - name: Build Application
         shell: powershell
         env:
-          VCPKG_ROOT: C:\vcpkg
-          VCPKG_DEFAULT_TRIPLET: x64-windows-static
-          CARGO_INCREMENTAL: 1 # Aktiviert für schnelleren Rebuild
+          CARGO_INCREMENTAL: 1
         run: |
+          $destDir = "build_output_${{ matrix.variant }}"
+          if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force }
+
+          # Der eigentliche Build Befehl
           python build.py --portable --flutter --skip-portable-pack
           
           $buildDir = "flutter\build\windows\x64\runner\Release"
-          $destDir = "build_output_${{ matrix.variant }}"
-          New-Item -ItemType Directory -Path $destDir -Force
-          Move-Item -Path "$buildDir\*" -Destination $destDir -Force
+          
+          if (Test-Path "$buildDir\*.exe") {
+              Move-Item -Path "$buildDir\*" -Destination $destDir -Force
+              Write-Host "✅ Build erfolgreich."
+          } else {
+              Write-Host "❌ Build fehlgeschlagen."
+              exit 1
+          }
 
-      # --- SCHRITT 7: PACKEN ---
+      # --- SCHRITT 8: PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
