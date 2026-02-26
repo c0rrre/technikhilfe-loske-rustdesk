@@ -35,10 +35,8 @@ jobs:
           git submodule update --init --recursive
           cd ..
           
-          # Branding Repo holen
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
           
-          # Zusammenführen
           cp -r rustdesk_src/* .
           cp -r rustdesk_src/.* . 2>/dev/null || true
           if [ -d "my_branding_src/BRANDING" ]; then
@@ -99,7 +97,6 @@ jobs:
         with:
           name: source-code
           path: .
-          # Wir excludieren schwere Ordner, um den Transfer zu beschleunigen
           exclude: |
             .git
             target
@@ -129,7 +126,6 @@ jobs:
           name: source-code
           path: .
 
-      # System Tools müssen pro Runner installiert werden
       - name: Install Build Tools (LLVM & NASM)
         shell: powershell
         run: choco install llvm nasm -y
@@ -140,7 +136,6 @@ jobs:
       - name: Setup Rust Toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      # Caches laden (geteilt zwischen Jobs)
       - name: Cache Rust Target
         uses: actions/cache@v4
         with:
@@ -206,7 +201,6 @@ jobs:
           Pop-Location
           flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
-      # --- SPEZIFISCHE LOGIK FÜR QUICKSUPPORT ---
       - name: Apply QuickSupport Mods (Only if QS)
         if: matrix.variant == 'qs'
         shell: bash
@@ -214,20 +208,13 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
-          
-          # 1. SETTINGS BUTTON ENTFERNEN
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
-          
-          # 2. FESTE ID EINBAUEN & EDITIEREN SPERREN
           if [ -n "$QS_TARGET" ]; then
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
-          # ReadOnly erzwingen
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
-          
           echo "✅ QuickSupport Modifikationen fertig."
 
-      # --- BUILD ---
       - name: Build Application
         shell: powershell
         env:
@@ -237,13 +224,11 @@ jobs:
         run: |
           python build.py --portable --flutter --skip-portable-pack
           
-          # Ordner vorbereiten für Packer
           $buildDir = "flutter\build\windows\x64\runner\Release"
           $destDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $destDir -Force
           Move-Item -Path "$buildDir\*" -Destination $destDir -Force
 
-      # --- PACKEN ---
       - name: Pack Portable Executable
         shell: powershell
         run: |
@@ -257,14 +242,15 @@ jobs:
           
           $packed = Get-ChildItem -Path ./libs/portable -Recurse -Filter "*packer.exe" | Select-Object -First 1
           
-          # Umbenennen für Upload
           $prefix = "${{ secrets.APP_NAME }}"
           if ("${{ matrix.variant }}" -eq "qs") {
             $finalName = "${prefix}_QuickSupport_${{ env.VERSION_TAG }}.exe"
           } else {
             $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
           }
-          Move-Item $packed.FullName $finalName -Force
+          
+          # Move to ROOT for easy upload
+          Move-Item $packed.FullName -Destination ".\$finalName" -Force
           echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
@@ -295,6 +281,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare-source.outputs.version_tag }}
-          files: *.exe
+          files: |
+            *.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
