@@ -239,66 +239,58 @@ jobs:
               exit 1
           }
 
-      # --- SCHRITT 8: PACKEN (BASH VERSION) ---
-      # Bash ist viel stabiler für String-Operationen und Env-Vars
+      # --- SCHRITT 8: PACKEN (PowerShell Version) ---
       - name: Pack Portable Executable
-        shell: bash
+        shell: powershell
         env:
           MY_APP_NAME: ${{ secrets.APP_NAME }}
           MY_VERSION_TAG: ${{ env.VERSION_TAG }}
           VARIANT: ${{ matrix.variant }}
         run: |
-          cd libs/portable
+          Push-Location ./libs/portable
           pip install -r requirements.txt
           
-          # Pfad zum Quell-Ordner (Relativ, Windows Bash versteht ../..)
-          SRC_DIR="../../build_output_${VARIANT}"
+          # Quell-Ordner basierend auf Matrix Variant
+          $srcDir = "../../build_output_$($env:VARIANT)"
           
-          # Finde die Source EXE
-          EXE_FILE=$(find "$SRC_DIR" -maxdepth 1 -name "*.exe" | head -n 1)
+          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
+          if (-not $exeFile) { Write-Host "❌ Error: Source EXE missing in $srcDir"; exit 1 }
           
-          if [ -z "$EXE_FILE" ]; then
-              echo "❌ Source EXE missing in $SRC_DIR"
-              exit 1
-          fi
+          Write-Host "Packing source: $($exeFile.FullName)"
           
-          EXE_NAME=$(basename "$EXE_FILE")
-          echo "Packing source: $EXE_FILE ($EXE_NAME)"
+          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           
-          # Generate Data
-          # Bash auf Windows: Pfade in Quotes setzen.
-          python generate.py -f "$SRC_DIR/" -o . -e "$EXE_NAME"
-          
-          echo "🔨 Compiling Portable Packer..."
+          # WICHTIG: PowerShell nutzen, damit MSVC Linker gefunden wird
+          Write-Host "🔨 Compiling Portable Packer..."
           cargo build --release
           
-          echo "--- Suche nach generierter EXE ---"
-          # Suche die neueste EXE im target ordner, die nicht packer.exe heißt
-          # ls -t sortiert nach Zeit (neueste zuerst)
-          CANDIDATE=$(ls -t target/release/*.exe | grep -v "packer.exe" | head -n 1)
+          # Ergebnis suchen
+          $packed = Get-ChildItem -Path "./target/release" -Recurse -Filter "*packer.exe" | Select-Object -First 1
           
-          if [ -z "$CANDIDATE" ]; then
-              echo "❌ CRITICAL: Keine Output EXE in target/release gefunden!"
-              ls -R target/release
+          if (-not $packed) {
+              Write-Host "❌ Error: Packed EXE not found!"
               exit 1
-          fi
+          }
           
-          echo "✅ Gefunden: $CANDIDATE"
+          Write-Host "✅ Found packed file: $($packed.FullName)"
           
-          # Neuen Namen bauen
-          if [ "$VARIANT" == "qs" ]; then
-              FINAL_NAME="${MY_APP_NAME}_QuickSupport_${MY_VERSION_TAG}.exe"
-          else
-              FINAL_NAME="${MY_APP_NAME}_Portable_${MY_VERSION_TAG}.exe"
-          fi
+          if ($env:VARIANT -eq "qs") {
+             $typeStr = "QuickSupport"
+          } else {
+             $typeStr = "Portable"
+          }
           
-          # Verschieben ins Root Verzeichnis
-          mv "$CANDIDATE" "../../$FINAL_NAME"
+          # Sicherer Name mit Format-Operator
+          $finalName = "{0}_{1}_{2}.exe" -f $env:MY_APP_NAME, $typeStr, $env:MY_VERSION_TAG
           
-          echo "Artifact ready at: $FINAL_NAME"
+          $destPath = Join-Path "../.." $finalName
+          Move-Item -LiteralPath $packed.FullName -Destination $destPath -Force
           
-          # GITHUB_ENV schreiben (Bash Syntax ist hier sehr sauber)
-          echo "ARTIFACT_PATH=$FINAL_NAME" >> $GITHUB_ENV
+          Write-Host "Artifact ready at: $destPath"
+          
+          "ARTIFACT_PATH=$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          
+          Pop-Location
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
