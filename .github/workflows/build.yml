@@ -156,16 +156,12 @@ jobs:
           cache: true
           cache-key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}
 
-      # --- OPTIMIERTER VCPKG CACHE ---
       - name: Restore VCPKG Cache
         id: cache-vcpkg
         uses: actions/cache@v4
         with:
           path: C:\vcpkg
-          # Wir nutzen einen Key ohne "QS/Standard" Unterscheidung, da VCPKG für beide gleich ist.
-          # Das erhöht die Chance auf einen Cache Hit drastisch.
           key: vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
-          # WICHTIG: restore-keys erlaubt Nutzung alter Caches, auch wenn sich Details ändern
           restore-keys: |
              vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
       
@@ -187,8 +183,6 @@ jobs:
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
           
-          # --- CLEANUP FÜR KLEINEREN CACHE ---
-          # Wir löschen Build-Trees und Downloads. Das spart Gigabytes und beschleunigt den Upload.
           Remove-Item -Recurse -Force buildtrees
           Remove-Item -Recurse -Force downloads
           Remove-Item -Recurse -Force packages
@@ -223,7 +217,6 @@ jobs:
         env:
           CARGO_INCREMENTAL: 1
         run: |
-          # Pfade fixen (wichtig für den Build)
           $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
           $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
           $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
@@ -254,10 +247,27 @@ jobs:
           $srcDir = "../../build_output_${{ matrix.variant }}"
           $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
           
-          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
-          Pop-Location
+          Write-Host "Packing source: $($exeFile.FullName)"
           
-          $packed = Get-ChildItem -Path ./libs/portable -Recurse -Filter "*packer.exe" | Select-Object -First 1
+          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
+          
+          # Zeige Dateien zur Sicherheit
+          Write-Host "--- Files created ---"
+          Get-ChildItem . | Select-Object Name
+          
+          # FILTER GEÄNDERT auf *packed.exe
+          $packed = Get-ChildItem -Path . -Filter "*packed.exe" | Select-Object -First 1
+          
+          if (-not $packed) {
+             Write-Host "❌ Keine *packed.exe gefunden. Suche Fallback..."
+             # Fallback: Manchmal heißt es nur rustdesk.exe wenn output . ist
+             $packed = Get-ChildItem -Path . -Filter "rustdesk.exe" | Select-Object -First 1
+          }
+
+          if (-not $packed) {
+              Write-Host "❌ CRITICAL: Keine Ausgabedatei gefunden!"
+              exit 1
+          }
           
           $prefix = "${{ secrets.APP_NAME }}"
           if ("${{ matrix.variant }}" -eq "qs") {
@@ -266,7 +276,11 @@ jobs:
             $finalName = "${prefix}_Portable_${{ env.VERSION_TAG }}.exe"
           }
           
-          Move-Item $packed.FullName -Destination ".\$finalName" -Force
+          # Move nach ..\.. (Root) für Artifact Upload
+          Move-Item $packed.FullName -Destination "..\..\[$finalName]" -Force
+          Pop-Location
+          
+          Write-Host "Final executable ready: $finalName"
           echo "ARTIFACT_PATH=$finalName" >> $env:GITHUB_ENV
 
       - name: Upload Artifact
