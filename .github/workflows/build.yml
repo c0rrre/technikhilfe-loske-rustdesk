@@ -287,7 +287,8 @@ jobs:
           Move-Item -LiteralPath $packed.FullName -Destination $destPath -Force
           
           Write-Host "Artifact ready at: $destPath"
-          "ARTIFACT_PATH=$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          $envLine = 'ARTIFACT_PATH=' + $finalName
+          Add-Content -Path $env:GITHUB_ENV -Value $envLine
           
           Pop-Location
 
