@@ -288,7 +288,7 @@ jobs:
           
           Write-Host "Artifact ready at: $destPath"
           
-          "ARTIFACT_PATH=$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          ARTIFACT_PATH="$finalName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           
           Pop-Location
 
