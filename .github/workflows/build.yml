@@ -112,16 +112,15 @@ jobs:
           path: ${{ github.workspace }}/vcpkg
           key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
 
-      - name: Install VCPKG (if cache miss)
+      - name: Install VCPKG (only if cache miss)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $VCPKG = "${{ github.workspace }}\vcpkg"
-          if (Test-Path $VCPKG) { Remove-Item -Recurse -Force $VCPKG }
-          git clone https://github.com/microsoft/vcpkg $VCPKG
-          cd $VCPKG
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          cd C:\vcpkg
           git checkout $env:VCPKG_COMMIT_ID
           .\bootstrap-vcpkg.bat
+
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
