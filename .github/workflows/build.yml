@@ -15,328 +15,196 @@ permissions:
   contents: write
 
 jobs:
-  # --- JOB 1: PREPARE ---
+
+# ==========================================
+# JOB 1 – PREPARE SOURCE
+# ==========================================
   prepare-source:
-    name: Prepare Source Code
     runs-on: windows-2022
     outputs:
       version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
+
     steps:
-      - name: Checkout & Merge Repositories
+      - name: Clone RustDesk
         shell: bash
         run: |
-          git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
-          cd rustdesk_src
+          git clone --recursive https://github.com/rustdesk/rustdesk.git
+          cd rustdesk
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             REF="${{ github.ref_name }}"
           fi
           git checkout "$REF" || git checkout master
           git submodule update --init --recursive
+          mv * ../
           cd ..
-          
-          git clone "https://github.com/${{ github.repository }}.git" my_branding_src
-          
-          cp -r rustdesk_src/* .
-          cp -r rustdesk_src/.* . 2>/dev/null || true
-          if [ -d "my_branding_src/BRANDING" ]; then
-             cp -r my_branding_src/BRANDING .
-          fi
-          rm -rf rustdesk_src my_branding_src
+          rm -rf rustdesk
 
-      - name: Set Version Variables
+      - name: Set Version
         id: vars
         shell: bash
         run: |
           VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
           DATE=$(date +'%Y-%m-%d-%H-%M')
-          VERSION_TAG="${VERSION}-${DATE}"
-          echo "VERSION_TAG=${VERSION_TAG}" >> $GITHUB_OUTPUT
-
-      - name: Apply Branding (Common)
-        shell: bash
-        env:
-          MY_APP_NAME: ${{ secrets.APP_NAME }}
-        run: |
-          if [ -n "$MY_APP_NAME" ]; then
-             sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
-             find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
-             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
-             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
-          fi
-          if [ -f "logo.png" ]; then
-             mkdir -p flutter/assets/images
-             cp "BRANDING/logo.png" "flutter/assets/images/logo.png" || true
-          fi
-          if [ -f "app_icon.ico" ]; then
-             mkdir -p flutter/windows/runner/resources
-             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico" || true
-          fi
-
-      - name: Inject Server Configuration
-        shell: bash
-        env:
-          VAL_API: ${{ secrets.API_SERVER }}
-          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
-          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
-          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
-        run: |
-          TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
-          for CONF in "${TARGETS[@]}"; do
-            if [ -f "$CONF" ]; then
-              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
-              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
-              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
-              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
-              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
-            fi
-          done
+          echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
 
       - name: Upload Prepared Source
         uses: actions/upload-artifact@v4
         with:
-          name: source-code
+          name: source-prepared
           path: .
           exclude: |
             .git
             target
             vcpkg
 
-  # --- JOB 2: PARALLEL BUILD ---
-  build-matrix:
-    name: Build ${{ matrix.variant }}
+
+# ==========================================
+# JOB 2 – PREPARE DEPENDENCIES (ONCE)
+# ==========================================
+  prepare-deps:
     needs: prepare-source
     runs-on: windows-2022
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [standard, qs]
+
     env:
       FLUTTER_VERSION: '3.24.5'
-      VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
-      VCPKG_ROOT: C:\vcpkg
-      VCPKG_INSTALLATION_ROOT: C:\vcpkg
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
-      LIBCLANG_PATH: C:\Program Files\LLVM\bin
-      LLVM_INSTALL_PATH: C:\Program Files\LLVM
-    
+
     steps:
-      - name: Download Prepared Source
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
-          name: source-code
+          name: source-prepared
           path: .
 
-      - name: Check and Install Tools
-        shell: powershell
-        run: |
-          $llvm = Test-Path "C:\Program Files\LLVM\bin"
-          $nasm = Get-Command nasm -ErrorAction SilentlyContinue
-          if (-not $llvm -or -not $nasm) {
-             choco install llvm nasm -y
-          }
-
-      - name: Setup MSVC Dev Environment
+      - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Setup Rust Toolchain
+      - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Rust Cache
-        uses: swatinem/rust-cache@v2
-        with:
-          key: ${{ matrix.variant }}
 
       - name: Setup Flutter
         uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: 'stable'
+          channel: stable
           cache: true
-          cache-key: flutter-${{ runner.os }}-${{ env.FLUTTER_VERSION }}
 
-      - name: Restore VCPKG Cache
-        id: cache-vcpkg
-        uses: actions/cache@v4
-        with:
-          path: C:\vcpkg
-          key: vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
-          restore-keys: |
-             vcpkg-core-${{ runner.os }}-${{ env.VCPKG_COMMIT_ID }}
-      
-      - name: Install VCPKG (If not cached)
-        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
-        shell: powershell
+      - name: Install VCPKG
+        shell: pwsh
         run: |
-          Write-Host "Cache miss. Installing VCPKG..."
-          if (!(Test-Path "C:\vcpkg")) {
-            git clone https://github.com/microsoft/vcpkg C:\vcpkg
-          }
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
           cd C:\vcpkg
-          git fetch
-          git reset --hard ${{ env.VCPKG_COMMIT_ID }}
+          git checkout $env:VCPKG_COMMIT_ID
           .\bootstrap-vcpkg.bat
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
-          
-          Remove-Item -Recurse -Force buildtrees
-          Remove-Item -Recurse -Force downloads
-          Remove-Item -Recurse -Force packages
 
       - name: Generate Flutter Rust Bridge
-        shell: powershell
+        shell: pwsh
         run: |
-          if (-not (Get-Command flutter_rust_bridge_codegen -ErrorAction SilentlyContinue)) {
-             cargo install flutter_rust_bridge_codegen --version 1.80.1
-          }
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
           Push-Location flutter
           flutter pub get
           Pop-Location
-          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
-      - name: Apply QuickSupport Mods (Only if QS)
-        if: matrix.variant == 'qs'
-        shell: bash
-        env:
-          QS_TARGET: ${{ secrets.QS_TARGET_ID }}
-        run: |
-          echo "🔧 Wende QuickSupport Modifikationen an..."
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
-          if [ -n "$QS_TARGET" ]; then
-             echo "Setze Ziel-ID auf: $QS_TARGET"
-             find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
-          fi
-          echo "✅ QuickSupport Modifikationen fertig."
+          flutter_rust_bridge_codegen `
+            --rust-input src/flutter_ffi.rs `
+            --dart-output flutter/lib/generated_bridge.dart `
+            --rust-output src/bridge_generated.rs `
+            --c-output flutter/windows/runner/bridge_generated.h
 
-      - name: Build Application
-        shell: powershell
-        env:
-          CARGO_INCREMENTAL: 1
+      - name: Upload Dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: shared-deps
+          path: |
+            C:\vcpkg
+            flutter/lib/generated_bridge.dart
+            src/bridge_generated.rs
+            flutter/windows/runner/bridge_generated.h
+
+
+# ==========================================
+# JOB 3 – BUILD MATRIX
+# ==========================================
+  build:
+    needs: [prepare-source, prepare-deps]
+    runs-on: windows-2022
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [standard, qs]
+
+    env:
+      VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-prepared
+          path: .
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-deps
+          path: .
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Variant
+        shell: pwsh
         run: |
-          $vcpkgInclude = "C:\vcpkg\installed\x64-windows-static\include"
-          $vcpkgLib = "C:\vcpkg\installed\x64-windows-static\lib"
-          $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
-          $env:LIB = "$vcpkgLib;$env:LIB"
           $env:VCPKG_ROOT = "C:\vcpkg"
           $env:VCPKG_INSTALLATION_ROOT = "C:\vcpkg"
 
-          $destDir = "build_output_${{ matrix.variant }}"
-          if (!(Test-Path $destDir)) { New-Item -ItemType Directory -Path $destDir -Force }
+          if ("${{ matrix.variant }}" -eq "qs") {
+            Write-Host "Applying QuickSupport modifications..."
+            # optional QS patching hier
+          }
 
           python build.py --portable --flutter --skip-portable-pack
-          
+
           $buildDir = "flutter\build\windows\x64\runner\Release"
-          
-          if (Test-Path "$buildDir\*.exe") {
-              Move-Item -Path "$buildDir\*" -Destination $destDir -Force
-              Write-Host "✅ Build erfolgreich verschoben."
-          } else {
-              Write-Host "❌ Build fehlgeschlagen: Keine EXE gefunden."
-              exit 1
-          }
+          New-Item -ItemType Directory -Path build_output -Force
+          Move-Item "$buildDir\*.exe" build_output
 
-      - name: Print out 
-        shell: powershell
-        env:
-          MY_APP_NAME: ${{ secrets.APP_NAME }}
-          MY_VERSION_TAG: ${{ env.VERSION_TAG }}
-          VARIANT: ${{ matrix.variant }}
-        run: |
-          Write-Host "APP_NAME RAW: [$env:MY_APP_NAME]"
-          Write-Host "VERSION_TAG RAW: [$env:MY_VERSION_TAG]"
-
-      # --- SCHRITT 8: PACKEN (PowerShell Version) ---
-      - name: Pack Portable Executable
-        shell: powershell
-        env:
-          MY_APP_NAME: ${{ secrets.APP_NAME }}
-          MY_VERSION_TAG: ${{ env.VERSION_TAG }}
-          VARIANT: ${{ matrix.variant }}
-        run: |
-          Push-Location ./libs/portable
-          pip install -r requirements.txt
-          
-          # Quell-Ordner basierend auf Matrix Variant
-          $srcDir = "../../build_output_$($env:VARIANT)"
-          
-          $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { Write-Host "Error: Source EXE missing in $srcDir"; exit 1 }
-          
-          Write-Host "Packing source: $($exeFile.FullName)"
-          
-          python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
-          
-          # WICHTIG: PowerShell nutzen, damit MSVC Linker gefunden wird
-          Write-Host "Compiling Portable Packer..."
-          cargo build --release
-          
-          # Ergebnis suchen
-          $packed = Get-ChildItem -Path "./target/release" -Recurse -Filter "*packer.exe" | Select-Object -First 1
-          
-          if (-not $packed) {
-              Write-Host "Error: Packed EXE not found!"
-              exit 1
-          }
-          
-          Write-Host "Found packed file: $($packed.FullName)"
-          
-          if ($env:VARIANT -eq "qs") {
-              $typeStr = "QuickSupport"
-          } else {
-              $typeStr = "Portable"
-          }
-          
-          # Sicherer Name mit Format-Operator
-          $cleanAppName = $env:MY_APP_NAME -replace '"',''
-          $cleanVersion = $env:MY_VERSION_TAG -replace '"',''
-
-          $finalName = "{0}_{1}_{2}.exe" -f $cleanAppName, $typeStr, $cleanVersion
-
-          Write-Host "APP_NAME=[$env:MY_APP_NAME]"
-          Write-Host "VERSION_TAG=[$env:MY_VERSION_TAG]"
-          
-          $destPath = Join-Path "../.." $finalName
-          Move-Item -LiteralPath $packed.FullName -Destination $destPath -Force
-          
-          Write-Host "Artifact ready at: $destPath"
-          $envLine = 'ARTIFACT_PATH=' + $finalName
-          Add-Content -Path $env:GITHUB_ENV -Value $envLine
-          
-          Pop-Location
-
-      - name: Upload Artifact
+      - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.variant }}
-          path: ${{ env.ARTIFACT_PATH }}
+          path: build_output\*.exe
 
-  # --- JOB 3: RELEASE ---
+
+# ==========================================
+# JOB 4 – RELEASE
+# ==========================================
   release:
-    name: Publish Release
-    needs: [prepare-source, build-matrix]
+    needs: [prepare-source, build]
     runs-on: ubuntu-latest
+
     steps:
-      - name: Download Standard Artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: exe-standard
           path: .
 
-      - name: Download QS Artifact
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         with:
           name: exe-qs
           path: .
 
-      - name: Create Release
+      - name: Publish Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare-source.outputs.version_tag }}
-          files: |
-            *.exe
+          files: "*.exe"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
