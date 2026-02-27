@@ -77,7 +77,7 @@ jobs:
     runs-on: windows-2022
     env:
       FLUTTER_VERSION: '3.24.5'
-      VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+      VCPKG_COMMIT_ID: '120deac306216251622ca4860575a33844ba10b'
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
