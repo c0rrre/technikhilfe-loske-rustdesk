@@ -68,7 +68,7 @@ jobs:
     env:
       FLUTTER_VERSION: '3.24.5'
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
-      VCPKG_ROOT: C:\vcpkg
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
     steps:
@@ -78,9 +78,7 @@ jobs:
           path: .
 
       - uses: ilammy/msvc-dev-cmd@v1
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: swatinem/rust-cache@v2
 
       # -----------------------------
@@ -89,6 +87,7 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
           cache: true
 
       - name: Cache Pub
@@ -105,16 +104,15 @@ jobs:
         id: vcpkg-cache
         uses: actions/cache@v4
         with:
-          path: |
-            C:\vcpkg
+          path: vcpkg
           key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
 
       - name: Install VCPKG (only if cache miss)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg C:\vcpkg
-          cd C:\vcpkg
+          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          cd $env:VCPKG_ROOT
           git checkout $env:VCPKG_COMMIT_ID
           .\bootstrap-vcpkg.bat
 
@@ -145,9 +143,8 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: shared-deps
+          name: shared-bridge
           path: |
-            C:\vcpkg
             flutter/lib/generated_bridge.dart
             src/bridge_generated.rs
             flutter/windows/runner/bridge_generated.h
@@ -167,7 +164,7 @@ jobs:
 
     env:
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
-      VCPKG_ROOT: C:\vcpkg
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
 
     steps:
       - uses: actions/download-artifact@v4
@@ -177,18 +174,24 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: shared-deps
+          name: shared-bridge
           path: .
 
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
 
+      - name: Restore VCPKG Cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg
+          key: vcpkg-120deac3062162151622ca4860575a33844ba10b
+
       - name: Build Variant
         shell: pwsh
         run: |
           if ("${{ matrix.variant }}" -eq "qs") {
-            Write-Host "Applying QuickSupport patch"
+            Write-Host "Applying QuickSupport modifications..."
           }
 
           python build.py --portable --flutter --skip-portable-pack
