@@ -275,9 +275,9 @@ jobs:
           Write-Host "✅ Found packed file: $($packed.FullName)"
           
           if ($env:VARIANT -eq "qs") {
-             $typeStr = "QuickSupport"
+              $typeStr = "QuickSupport"
           } else {
-             $typeStr = "Portable"
+              $typeStr = "Portable"
           }
           
           # Sicherer Name mit Format-Operator
