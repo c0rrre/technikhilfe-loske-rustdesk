@@ -112,26 +112,23 @@ jobs:
           path: ${{ github.workspace }}/vcpkg
           key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
 
-      - name: Install VCPKG (only if cache miss)
+      - name: Install VCPKG (Manifest Mode)
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          if (-not (Test-Path $env:VCPKG_ROOT)) {
-              git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+          $vcpkgDir = "$env:GITHUB_WORKSPACE\vcpkg"
+          if (-not (Test-Path $vcpkgDir)) {
+              git clone https://github.com/microsoft/vcpkg $vcpkgDir
           }
-          cd $env:VCPKG_ROOT
+          cd $vcpkgDir
           git fetch
-          git checkout $env:VCPKG_COMMIT_ID
+          git reset --hard $env:VCPKG_COMMIT_ID
           .\bootstrap-vcpkg.bat
       
-          # Im Manifest Mode: build dependencies im Projektpfad installieren
-          cd ${{ github.workspace }}
-          $env:VCPKG_ROOT = "${{ github.workspace }}\vcpkg"
-          .\vcpkg\vcpkg install ffmpeg:x64-windows-static --triplet x64-windows-static
-          .\vcpkg\vcpkg install opus:x64-windows-static --triplet x64-windows-static
-          .\vcpkg\vcpkg install libvpx:x64-windows-static --triplet x64-windows-static
-          .\vcpkg\vcpkg install libyuv:x64-windows-static --triplet x64-windows-static
-          .\vcpkg\vcpkg install aom:x64-windows-static --triplet x64-windows-static
+          # Manifest Mode nutzen: einfach aus Repo root
+          cd $env:GITHUB_WORKSPACE
+          $env:VCPKG_ROOT = $vcpkgDir
+          .\vcpkg\vcpkg install --triplet x64-windows-static
         
       # Flutter Rust Bridge
       - name: Install flutter_rust_bridge_codegen
