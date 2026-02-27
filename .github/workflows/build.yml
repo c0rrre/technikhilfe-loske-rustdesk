@@ -35,12 +35,12 @@ jobs:
           git checkout "$REF" || git checkout master
           git submodule update --init --recursive
           cd ..
-  
+
       - name: Checkout Branding Repo
         shell: bash
         run: |
           git clone "https://github.com/${{ github.repository }}.git" my_branding_src
-  
+
       - name: Merge Source + Branding
         shell: bash
         run: |
@@ -50,7 +50,7 @@ jobs:
             cp -r my_branding_src/BRANDING .
           fi
           rm -rf rustdesk_src my_branding_src
-  
+
       - name: Set Version
         id: vars
         shell: bash
@@ -58,7 +58,7 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
           DATE=$(date +'%Y-%m-%d-%H-%M')
           echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
-  
+
       - name: Upload Prepared Source
         uses: actions/upload-artifact@v4
         with:
@@ -68,7 +68,7 @@ jobs:
             .git
             target
             vcpkg
-            
+
   # ==========================================
   # JOB 2 – PREPARE DEPENDENCIES (CACHED)
   # ==========================================
@@ -116,11 +116,13 @@ jobs:
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          git clone https://github.com/microsoft/vcpkg C:\vcpkg
-          cd C:\vcpkg
-          git checkout $env:VCPKG_COMMIT_ID
-          .\bootstrap-vcpkg.bat
-
+          if (-not (Test-Path $env:VCPKG_ROOT)) {
+              git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
+              cd $env:VCPKG_ROOT
+              git checkout $env:VCPKG_COMMIT_ID
+              .\bootstrap-vcpkg.bat
+          }
+          cd $env:VCPKG_ROOT
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
@@ -189,14 +191,28 @@ jobs:
       - name: Build Variant
         shell: pwsh
         run: |
+          $vcpkgInclude = "$env:VCPKG_ROOT\installed\x64-windows-static\include"
+          $vcpkgLib = "$env:VCPKG_ROOT\installed\x64-windows-static\lib"
+          $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
+          $env:LIB = "$vcpkgLib;$env:LIB"
+          $env:VCPKG_INSTALLATION_ROOT = $env:VCPKG_ROOT
+
           if ("${{ matrix.variant }}" -eq "qs") {
             Write-Host "Applying QuickSupport modifications..."
           }
+
           python build.py --portable --flutter --skip-portable-pack
+
           $buildDir = "flutter\build\windows\x64\runner\Release"
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
-          Move-Item "$buildDir\*.exe" $outDir
+
+          if (Test-Path "$buildDir\*.exe") {
+            Move-Item "$buildDir\*.exe" $outDir -Force
+          } else {
+            Write-Host "ERROR - Build fehlgeschlagen: Keine EXE gefunden."
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:
