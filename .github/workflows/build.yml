@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       rustdesk_ref:
-        description: 'RustDesk Version (Tag oder Branch)'
+        description: 'RustDesk Version'
         required: true
         default: 'master'
 
@@ -48,8 +48,7 @@ jobs:
           DATE=$(date +'%Y-%m-%d-%H-%M')
           echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
 
-      - name: Upload Prepared Source
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: source-prepared
           path: .
@@ -60,7 +59,7 @@ jobs:
 
 
 # ==========================================
-# JOB 2 – PREPARE DEPENDENCIES (ONCE)
+# JOB 2 – PREPARE DEPENDENCIES (CACHED)
 # ==========================================
   prepare-deps:
     needs: prepare-source
@@ -69,6 +68,8 @@ jobs:
     env:
       FLUTTER_VERSION: '3.24.5'
       VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
     steps:
       - uses: actions/download-artifact@v4
@@ -76,36 +77,62 @@ jobs:
           name: source-prepared
           path: .
 
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+      - uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Setup Flutter
-        uses: subosito/flutter-action@v2
+      - uses: swatinem/rust-cache@v2
+
+      # -----------------------------
+      # Flutter (mit Cache)
+      # -----------------------------
+      - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
           cache: true
 
-      - name: Install VCPKG
+      - name: Cache Pub
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~\AppData\Local\Pub\Cache
+          key: pub-${{ hashFiles('flutter/pubspec.lock') }}
+
+      # -----------------------------
+      # VCPKG Cache
+      # -----------------------------
+      - name: Cache VCPKG
+        id: vcpkg-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg
+          key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
+
+      - name: Install VCPKG (only if cache miss)
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           git clone https://github.com/microsoft/vcpkg C:\vcpkg
           cd C:\vcpkg
           git checkout $env:VCPKG_COMMIT_ID
           .\bootstrap-vcpkg.bat
+
           .\vcpkg install ffmpeg:x64-windows-static
           .\vcpkg install opus:x64-windows-static
           .\vcpkg install libvpx:x64-windows-static
           .\vcpkg install libyuv:x64-windows-static
           .\vcpkg install aom:x64-windows-static
 
-      - name: Generate Flutter Rust Bridge
+      # -----------------------------
+      # Flutter Rust Bridge
+      # -----------------------------
+      - name: Install flutter_rust_bridge_codegen
+        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
+
+      - name: Generate Bridge
         shell: pwsh
         run: |
-          cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
           Push-Location flutter
           flutter pub get
           Pop-Location
@@ -116,8 +143,7 @@ jobs:
             --rust-output src/bridge_generated.rs `
             --c-output flutter/windows/runner/bridge_generated.h
 
-      - name: Upload Dependencies
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: shared-deps
           path: |
@@ -141,6 +167,7 @@ jobs:
 
     env:
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+      VCPKG_ROOT: C:\vcpkg
 
     steps:
       - uses: actions/download-artifact@v4
@@ -153,21 +180,15 @@ jobs:
           name: shared-deps
           path: .
 
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
 
       - name: Build Variant
         shell: pwsh
         run: |
-          $env:VCPKG_ROOT = "C:\vcpkg"
-          $env:VCPKG_INSTALLATION_ROOT = "C:\vcpkg"
-
           if ("${{ matrix.variant }}" -eq "qs") {
-            Write-Host "Applying QuickSupport modifications..."
-            # optional QS patching hier
+            Write-Host "Applying QuickSupport patch"
           }
 
           python build.py --portable --flutter --skip-portable-pack
@@ -176,8 +197,7 @@ jobs:
           New-Item -ItemType Directory -Path build_output -Force
           Move-Item "$buildDir\*.exe" build_output
 
-      - name: Upload EXE
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.variant }}
           path: build_output\*.exe
@@ -201,8 +221,7 @@ jobs:
           name: exe-qs
           path: .
 
-      - name: Publish Release
-        uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ needs.prepare-source.outputs.version_tag }}
           files: "*.exe"
