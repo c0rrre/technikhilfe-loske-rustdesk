@@ -19,214 +19,212 @@ jobs:
 # ==========================================
 # JOB 1 – PREPARE SOURCE
 # ==========================================
-  prepare-source:
-    runs-on: windows-2022
-    outputs:
-      version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
+prepare-source:
+  runs-on: windows-2022
+  outputs:
+    version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
+  steps:
+    - name: Clone RustDesk
+      shell: bash
+      run: |
+        git clone --recursive https://github.com/rustdesk/rustdesk.git
+        cd rustdesk
+        REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
+        if [[ "${{ github.ref_type }}" == "tag" ]]; then
+          REF="${{ github.ref_name }}"
+        fi
+        git checkout "$REF" || git checkout master
+        git submodule update --init --recursive
+        mv * ../
+        cd ..
+        rm -rf rustdesk
 
-    steps:
-      - name: Clone RustDesk
-        shell: bash
-        run: |
-          git clone --recursive https://github.com/rustdesk/rustdesk.git
-          cd rustdesk
-          REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            REF="${{ github.ref_name }}"
-          fi
-          git checkout "$REF" || git checkout master
-          git submodule update --init --recursive
-          mv * ../
-          cd ..
-          rm -rf rustdesk
+    - name: Set Version
+      id: vars
+      shell: bash
+      run: |
+        VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
+        DATE=$(date +'%Y-%m-%d-%H-%M')
+        echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
 
-      - name: Set Version
-        id: vars
-        shell: bash
-        run: |
-          VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
-          DATE=$(date +'%Y-%m-%d-%H-%M')
-          echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: source-prepared
-          path: .
-          exclude: |
-            .git
-            target
-            vcpkg
-
+    - uses: actions/upload-artifact@v4
+      with:
+        name: source-prepared
+        path: .
+        exclude: |
+          .git
+          target
+          vcpkg
 
 # ==========================================
 # JOB 2 – PREPARE DEPENDENCIES (CACHED)
 # ==========================================
-  prepare-deps:
-    needs: prepare-source
-    runs-on: windows-2022
+prepare-deps:
+  needs: prepare-source
+  runs-on: windows-2022
+  env:
+    FLUTTER_VERSION: '3.24.5'
+    VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
+    VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+    VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
-    env:
-      FLUTTER_VERSION: '3.24.5'
-      VCPKG_COMMIT_ID: '120deac3062162151622ca4860575a33844ba10b'
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
-      VCPKG_DEFAULT_TRIPLET: x64-windows-static
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: source-prepared
+        path: .
 
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: source-prepared
-          path: .
+    - uses: ilammy/msvc-dev-cmd@v1
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: swatinem/rust-cache@v2
 
-      - uses: ilammy/msvc-dev-cmd@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+    # -----------------------------
+    # Flutter (mit Cache)
+    # -----------------------------
+    - uses: subosito/flutter-action@v2
+      with:
+        flutter-version: ${{ env.FLUTTER_VERSION }}
+        channel: stable
+        cache: true
 
-      # -----------------------------
-      # Flutter (mit Cache)
-      # -----------------------------
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ env.FLUTTER_VERSION }}
-          channel: stable
-          cache: true
+    - name: Cache Pub
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~\AppData\Local\Pub\Cache
+        key: pub-${{ hashFiles('flutter/pubspec.lock') }}
 
-      - name: Cache Pub
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~\AppData\Local\Pub\Cache
-          key: pub-${{ hashFiles('flutter/pubspec.lock') }}
+    # -----------------------------
+    # VCPKG Cache + Install
+    # -----------------------------
+    - name: Cache VCPKG
+      id: vcpkg-cache
+      uses: actions/cache@v4
+      with:
+        path: ${{ github.workspace }}/vcpkg
+        key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
 
-      # -----------------------------
-      # VCPKG Cache
-      # -----------------------------
-      - name: Cache VCPKG
-        id: vcpkg-cache
-        uses: actions/cache@v4
-        with:
-          path: vcpkg
-          key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
+    - name: Install VCPKG (only if cache miss)
+      if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+      shell: pwsh
+      run: |
+        $VCPKG = "${{ github.workspace }}\vcpkg"
+        if (Test-Path $VCPKG) {
+            Write-Host "Removing broken vcpkg folder..."
+            Remove-Item -Recurse -Force $VCPKG
+        }
+        git clone https://github.com/microsoft/vcpkg $VCPKG
+        cd $VCPKG
+        git checkout $env:VCPKG_COMMIT_ID
+        .\bootstrap-vcpkg.bat
+        .\vcpkg install ffmpeg:x64-windows-static
+        .\vcpkg install opus:x64-windows-static
+        .\vcpkg install libvpx:x64-windows-static
+        .\vcpkg install libyuv:x64-windows-static
+        .\vcpkg install aom:x64-windows-static
 
-      - name: Install VCPKG (only if cache miss)
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          git clone https://github.com/microsoft/vcpkg $env:VCPKG_ROOT
-          cd $env:VCPKG_ROOT
-          git checkout $env:VCPKG_COMMIT_ID
-          .\bootstrap-vcpkg.bat
+    # -----------------------------
+    # Flutter Rust Bridge
+    # -----------------------------
+    - name: Install flutter_rust_bridge_codegen
+      run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
 
-          .\vcpkg install ffmpeg:x64-windows-static
-          .\vcpkg install opus:x64-windows-static
-          .\vcpkg install libvpx:x64-windows-static
-          .\vcpkg install libyuv:x64-windows-static
-          .\vcpkg install aom:x64-windows-static
+    - name: Generate Bridge
+      shell: pwsh
+      run: |
+        Push-Location flutter
+        flutter pub get
+        Pop-Location
 
-      # -----------------------------
-      # Flutter Rust Bridge
-      # -----------------------------
-      - name: Install flutter_rust_bridge_codegen
-        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
+        flutter_rust_bridge_codegen `
+          --rust-input src/flutter_ffi.rs `
+          --dart-output flutter/lib/generated_bridge.dart `
+          --rust-output src/bridge_generated.rs `
+          --c-output flutter/windows/runner/bridge_generated.h
 
-      - name: Generate Bridge
-        shell: pwsh
-        run: |
-          Push-Location flutter
-          flutter pub get
-          Pop-Location
-
-          flutter_rust_bridge_codegen `
-            --rust-input src/flutter_ffi.rs `
-            --dart-output flutter/lib/generated_bridge.dart `
-            --rust-output src/bridge_generated.rs `
-            --c-output flutter/windows/runner/bridge_generated.h
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: shared-bridge
-          path: |
-            flutter/lib/generated_bridge.dart
-            src/bridge_generated.rs
-            flutter/windows/runner/bridge_generated.h
-
+    - uses: actions/upload-artifact@v4
+      with:
+        name: shared-bridge
+        path: |
+          flutter/lib/generated_bridge.dart
+          src/bridge_generated.rs
+          flutter/windows/runner/bridge_generated.h
 
 # ==========================================
 # JOB 3 – BUILD MATRIX
 # ==========================================
-  build:
-    needs: [prepare-source, prepare-deps]
-    runs-on: windows-2022
+build:
+  needs: [prepare-source, prepare-deps]
+  runs-on: windows-2022
+  strategy:
+    fail-fast: false
+    matrix:
+      variant: [standard, qs]
+  env:
+    VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+    VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+    VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [standard, qs]
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: source-prepared
+        path: .
 
-    env:
-      VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+    - uses: actions/download-artifact@v4
+      with:
+        name: shared-bridge
+        path: .
 
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: source-prepared
-          path: .
+    - uses: ilammy/msvc-dev-cmd@v1
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: swatinem/rust-cache@v2
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: shared-bridge
-          path: .
+    - name: Restore VCPKG Cache
+      uses: actions/cache@v4
+      with:
+        path: vcpkg
+        key: vcpkg-120deac3062162151622ca4860575a33844ba10b
 
-      - uses: ilammy/msvc-dev-cmd@v1
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: swatinem/rust-cache@v2
+    - name: Build Variant
+      shell: pwsh
+      run: |
+        if ("${{ matrix.variant }}" -eq "qs") {
+          Write-Host "Applying QuickSupport modifications..."
+        }
 
-      - name: Restore VCPKG Cache
-        uses: actions/cache@v4
-        with:
-          path: vcpkg
-          key: vcpkg-120deac3062162151622ca4860575a33844ba10b
+        python build.py --portable --flutter --skip-portable-pack
 
-      - name: Build Variant
-        shell: pwsh
-        run: |
-          if ("${{ matrix.variant }}" -eq "qs") {
-            Write-Host "Applying QuickSupport modifications..."
-          }
+        $buildDir = "flutter\build\windows\x64\runner\Release"
+        $outDir = "build_output_${{ matrix.variant }}"
+        New-Item -ItemType Directory -Path $outDir -Force
+        Move-Item "$buildDir\*.exe" $outDir
 
-          python build.py --portable --flutter --skip-portable-pack
-
-          $buildDir = "flutter\build\windows\x64\runner\Release"
-          New-Item -ItemType Directory -Path build_output -Force
-          Move-Item "$buildDir\*.exe" build_output
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: exe-${{ matrix.variant }}
-          path: build_output\*.exe
-
+    - uses: actions/upload-artifact@v4
+      with:
+        name: exe-${{ matrix.variant }}
+        path: build_output_${{ matrix.variant }}\*.exe
 
 # ==========================================
 # JOB 4 – RELEASE
 # ==========================================
-  release:
-    needs: [prepare-source, build]
-    runs-on: ubuntu-latest
+release:
+  needs: [prepare-source, build]
+  runs-on: ubuntu-latest
+  steps:
+    - uses: actions/download-artifact@v4
+      with:
+        name: exe-standard
+        path: .
 
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: exe-standard
-          path: .
+    - uses: actions/download-artifact@v4
+      with:
+        name: exe-qs
+        path: .
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: exe-qs
-          path: .
-
-      - uses: softprops/action-gh-release@v1
-        with:
-          tag_name: ${{ needs.prepare-source.outputs.version_tag }}
-          files: "*.exe"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - uses: softprops/action-gh-release@v1
+      with:
+        tag_name: ${{ needs.prepare-source.outputs.version_tag }}
+        files: "*.exe"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
