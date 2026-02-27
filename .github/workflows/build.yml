@@ -239,6 +239,16 @@ jobs:
               exit 1
           }
 
+      - name: Print out 
+        shell: powershell
+        env:
+          MY_APP_NAME: ${{ secrets.APP_NAME }}
+          MY_VERSION_TAG: ${{ env.VERSION_TAG }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          Write-Host "APP_NAME RAW: [$env:MY_APP_NAME]"
+          Write-Host "VERSION_TAG RAW: [$env:MY_VERSION_TAG]"
+
       # --- SCHRITT 8: PACKEN (PowerShell Version) ---
       - name: Pack Portable Executable
         shell: powershell
@@ -281,7 +291,10 @@ jobs:
           }
           
           # Sicherer Name mit Format-Operator
-          $finalName = "{0}_{1}_{2}.exe" -f $env:MY_APP_NAME, $typeStr, $env:MY_VERSION_TAG
+          $cleanAppName = $env:MY_APP_NAME -replace '"',''
+          $cleanVersion = $env:MY_VERSION_TAG -replace '"',''
+
+          $finalName = "{0}_{1}_{2}.exe" -f $cleanAppName, $typeStr, $cleanVersion
 
           Write-Host "APP_NAME=[$env:MY_APP_NAME]"
           Write-Host "VERSION_TAG=[$env:MY_VERSION_TAG]"
