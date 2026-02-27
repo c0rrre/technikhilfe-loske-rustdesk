@@ -26,18 +26,31 @@ jobs:
       - name: Checkout RustDesk
         shell: bash
         run: |
-          git clone --recursive https://github.com/rustdesk/rustdesk.git
-          cd rustdesk
+          git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
+          cd rustdesk_src
           REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             REF="${{ github.ref_name }}"
           fi
           git checkout "$REF" || git checkout master
           git submodule update --init --recursive
-          mv * ../
           cd ..
-          rm -rf rustdesk
-
+  
+      - name: Checkout Branding Repo
+        shell: bash
+        run: |
+          git clone "https://github.com/${{ github.repository }}.git" my_branding_src
+  
+      - name: Merge Source + Branding
+        shell: bash
+        run: |
+          cp -r rustdesk_src/* .
+          cp -r rustdesk_src/.* . 2>/dev/null || true
+          if [ -d "my_branding_src/BRANDING" ]; then
+            cp -r my_branding_src/BRANDING .
+          fi
+          rm -rf rustdesk_src my_branding_src
+  
       - name: Set Version
         id: vars
         shell: bash
@@ -45,7 +58,7 @@ jobs:
           VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
           DATE=$(date +'%Y-%m-%d-%H-%M')
           echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
-
+  
       - name: Upload Prepared Source
         uses: actions/upload-artifact@v4
         with:
@@ -55,7 +68,7 @@ jobs:
             .git
             target
             vcpkg
-
+            
   # ==========================================
   # JOB 2 – PREPARE DEPENDENCIES (CACHED)
   # ==========================================
