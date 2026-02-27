@@ -264,25 +264,25 @@ jobs:
           $srcDir = "../../build_output_$($env:VARIANT)"
           
           $exeFile = Get-ChildItem -Path $srcDir -Filter "*.exe" | Select-Object -First 1
-          if (-not $exeFile) { Write-Host "❌ Error: Source EXE missing in $srcDir"; exit 1 }
+          if (-not $exeFile) { Write-Host "Error: Source EXE missing in $srcDir"; exit 1 }
           
           Write-Host "Packing source: $($exeFile.FullName)"
           
           python generate.py -f "$srcDir/" -o . -e "$($exeFile.Name)"
           
           # WICHTIG: PowerShell nutzen, damit MSVC Linker gefunden wird
-          Write-Host "🔨 Compiling Portable Packer..."
+          Write-Host "Compiling Portable Packer..."
           cargo build --release
           
           # Ergebnis suchen
           $packed = Get-ChildItem -Path "./target/release" -Recurse -Filter "*packer.exe" | Select-Object -First 1
           
           if (-not $packed) {
-              Write-Host "❌ Error: Packed EXE not found!"
+              Write-Host "Error: Packed EXE not found!"
               exit 1
           }
           
-          Write-Host "✅ Found packed file: $($packed.FullName)"
+          Write-Host "Found packed file: $($packed.FullName)"
           
           if ($env:VARIANT -eq "qs") {
               $typeStr = "QuickSupport"
