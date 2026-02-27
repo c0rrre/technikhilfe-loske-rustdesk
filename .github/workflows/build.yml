@@ -282,6 +282,9 @@ jobs:
           
           # Sicherer Name mit Format-Operator
           $finalName = "{0}_{1}_{2}.exe" -f $env:MY_APP_NAME, $typeStr, $env:MY_VERSION_TAG
+
+          Write-Host "APP_NAME=[$env:MY_APP_NAME]"
+          Write-Host "VERSION_TAG=[$env:MY_VERSION_TAG]"
           
           $destPath = Join-Path "../.." $finalName
           Move-Item -LiteralPath $packed.FullName -Destination $destPath -Force
