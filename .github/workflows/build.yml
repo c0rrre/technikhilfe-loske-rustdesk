@@ -331,6 +331,12 @@ jobs:
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
 
+          $finalName = "TechnikHilfe-Loske_Portable_$env:VERSION_TAG.exe"
+          
+          if ("${{ matrix.variant }}" -eq "qs") {
+            $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
+          }
+
           Write-Host "Suche EXE in: $buildDir"
           if (Test-Path "$buildDir\*.exe") {
             Move-Item "$buildDir\*.exe" $outDir -Force
