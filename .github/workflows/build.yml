@@ -231,6 +231,7 @@ jobs:
     env:
       env:
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+      FLUTTER_VERSION: '3.24.5'
       VCPKG_ROOT: C:\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
@@ -247,6 +248,12 @@ jobs:
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
 
       - name: Restore VCPKG Cache
         uses: actions/cache@v4
