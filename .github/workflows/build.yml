@@ -312,65 +312,79 @@ jobs:
       - name: Pack Portable Executable
         shell: pwsh
         run: |
+          # 1. Python Dependencies
           pip install -r libs/portable/requirements.txt
           
-          # FIX: .Path am Ende, damit wir einen echten String haben
-          $rawBuildDir = (Resolve-Path "flutter\build\windows\x64\runner\Release").Path
-          $targetName = "rustdesk.exe"
-          $sourceExePath = "$rawBuildDir\$targetName"
-
-          Write-Host "Packing source from: $sourceExePath"
+          # 2. Pfade absolut auflösen (WICHTIG für Python)
+          # Wo liegen die gebauten Dateien?
+          $sourceDir = (Resolve-Path "flutter\build\windows\x64\runner\Release").Path
+          # Wo liegt das Packer-Skript?
+          $packerScriptDir = (Resolve-Path "libs\portable").Path
+          # Wo wollen wir arbeiten? (Sandbox)
+          $workDir = "$env:GITHUB_WORKSPACE\temp_pack"
           
-          if (-not (Test-Path $sourceExePath)) {
-            Write-Error "CRITICAL: Quell-EXE nicht gefunden unter $sourceExePath"
+          Write-Host "Source: $sourceDir"
+          Write-Host "Packer: $packerScriptDir"
+          Write-Host "WorkDir: $workDir"
+
+          # 3. Arbeitsordner erstellen und alles hineinkopieren
+          New-Item -ItemType Directory -Path $workDir -Force
+          Copy-Item "$sourceDir\*" "$workDir" -Recurse -Force
+          
+          # Die EXE im Arbeitsordner finden
+          $targetExeName = "rustdesk.exe"
+          $targetExePath = "$workDir\$targetExeName"
+          
+          if (-not (Test-Path $targetExePath)) {
+            Write-Error "CRITICAL: rustdesk.exe nicht im Arbeitsordner gefunden!"
             exit 1
           }
 
-          Push-Location libs/portable
+          # 4. Packer ausführen
+          # Wir wechseln in den Packer-Ordner, damit er seine eigenen Templates findet
+          Push-Location $packerScriptDir
           
-          # Generierung starten (erzeugt data.bin)
-          python generate.py -f "$rawBuildDir" -o . -e "$targetName"
+          Write-Host "Starte Python Packer..."
+          # -f: Input Ordner (unser WorkDir)
+          # -o: Output Ordner (auch WorkDir, damit data.bin dort landet)
+          # -e: Name der EXE
+          python generate.py -f "$workDir" -o "$workDir" -e "$targetExeName"
           
-          # Prüfen, ob Python die EXE erstellt hat (heißt meist rustdesk.exe im aktuellen Ordner)
-          $packedFile = Get-ChildItem -Path . -Filter "$targetName" -ErrorAction SilentlyContinue
+          Pop-Location # Zurück aus libs/portable
 
-          # FALLBACK: Manuelles Zusammenfügen (wenn Python nur data.bin gebaut hat)
-          if (-not $packedFile -and (Test-Path "data.bin")) {
-            Write-Host "⚠️ Python hat keine EXE erstellt. Starte manuellen Merge..." -ForegroundColor Yellow
+          # 5. Überprüfen und Zusammenfügen
+          $dataBinPath = "$workDir\data.bin"
+          
+          if (Test-Path $dataBinPath) {
+            Write-Host "✅ data.bin wurde erstellt. Füge EXE und DATA zusammen..."
             
-            # Wir lesen direkt die Original-EXE (sicherer als erst kopieren)
-            $bytesExe = [System.IO.File]::ReadAllBytes($sourceExePath)
-            $bytesData = [System.IO.File]::ReadAllBytes(".\data.bin")
+            # Bytes lesen (ALLES ABSOLUTE PFADE)
+            $bytesExe = [System.IO.File]::ReadAllBytes($targetExePath)
+            $bytesData = [System.IO.File]::ReadAllBytes($dataBinPath)
             
-            # Neue Datei schreiben
-            $newFileName = "rustdesk-packed.exe"
-            [System.IO.File]::WriteAllBytes(".\$newFileName", $bytesExe + $bytesData)
+            # Neue Datei: rustdesk-packed.exe im WorkDir
+            $packedPath = "$workDir\rustdesk-packed.exe"
+            [System.IO.File]::WriteAllBytes($packedPath, $bytesExe + $bytesData)
             
-            $packedFile = Get-ChildItem -Path ".\$newFileName"
-          }
-
-          if (-not $packedFile) {
-            Write-Error "FEHLER: Konnte keine gepackte EXE erstellen."
-            ls # Zeige Ordnerinhalt zur Diagnose
+            Write-Host "Erfolgreich gepackt: $packedPath"
+          } else {
+            Write-Error "FEHLER: Python Skript hat keine data.bin in $workDir erstellt."
+            Get-ChildItem $workDir # Zeige Inhalt zur Diagnose
             exit 1
           }
 
-          Write-Host "Packed File ready: $($packedFile.FullName)"
-          Pop-Location
-
-          # Zielordner vorbereiten
+          # 6. Finalen Namen bestimmen und verschieben
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
 
-          # Finalen Namen bestimmen
           $finalName = "TechnikHilfe-Loske_Portable_$env:VERSION_TAG.exe"
           if ("${{ matrix.variant }}" -eq "qs") {
             $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
           }
 
-          # Verschieben
-          Move-Item $packedFile.FullName "$outDir\$finalName" -Force
-          Write-Host "✅ SUCCESS: $outDir\$finalName"
+          # Die gepackte Datei als finale Datei verschieben
+          Move-Item $packedPath "$outDir\$finalName" -Force
+          Write-Host "✅ FINAL SUCCESS: $outDir\$finalName"
 
       - uses: actions/upload-artifact@v4
         with:
