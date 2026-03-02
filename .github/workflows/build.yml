@@ -286,7 +286,7 @@ jobs:
           fi
           echo "✅ QuickSupport Modifikationen fertig."
 
-      - name: Build Variant (Raw Files)
+      - name: Build client
         shell: pwsh
         env:
           LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
@@ -312,44 +312,64 @@ jobs:
       - name: Pack Portable Executable
         shell: pwsh
         run: |
-          # 1. Python Dependencies für den Packer installieren
           pip install -r libs/portable/requirements.txt
           
-          # 2. Pfade definieren
-          # Hier liegen die rohen Dateien (rustdesk.exe, flutter_windows.dll, etc.)
           $rawBuildDir = Resolve-Path "flutter\build\windows\x64\runner\Release"
-          $targetName = "rustdesk.exe"
-          
           Write-Host "Packing source from: $rawBuildDir"
           
-          # 3. Packer ausführen
+          # Wir merken uns den Namen der Eingabe-EXE (meist rustdesk.exe)
+          $inputExe = Get-ChildItem -Path "$rawBuildDir" -Filter "*.exe" | Select-Object -First 1
+          $targetName = $inputExe.Name
+
           Push-Location libs/portable
-          # -f: Eingabeordner (wo die rohe EXE liegt)
-          # -o: Ausgabeordner (aktuelles Verzeichnis libs/portable)
-          # -e: Name der Eingabe-EXE
+          
+          # Generierung starten
           python generate.py -f "$rawBuildDir" -o . -e "$targetName"
           
-          # Der Packer erstellt eine Datei, die auf "-packed.exe" endet (z.B. rustdesk-packed.exe)
-          $packedFile = Get-ChildItem -Filter "*-packed.exe" | Select-Object -First 1
-          
+          # DEBUG: Zeigen, was erstellt wurde (falls es wieder fehlschlägt)
+          Write-Host "Inhalt von libs/portable:"
+          Get-ChildItem | Select-Object Name, Length
+
+          # 1. VERSUCH: Hat Python die EXE erstellt?
+          # Das Skript nennt sie meistens einfach "rustdesk.exe" (ohne -packed)
+          $packedFile = Get-ChildItem -Path . -Filter "$targetName" -ErrorAction SilentlyContinue
+
+          # 2. NOTFALL PLAN: Falls Python nur data.bin erstellt hat, kleben wir es selbst zusammen
+          if (-not $packedFile -and (Test-Path "data.bin")) {
+            Write-Host "⚠️ Python hat keine EXE erstellt, aber data.bin ist da. Manuelles Zusammenfügen..." -ForegroundColor Yellow
+            
+            # Kopiere Original-EXE hierher
+            Copy-Item "$rawBuildDir\$targetName" -Destination ".\$targetName"
+            
+            # data.bin an die EXE anhängen (Binär)
+            $exeContent = [System.IO.File]::ReadAllBytes(".\$targetName")
+            $dataContent = [System.IO.File]::ReadAllBytes(".\data.bin")
+            
+            # Zusammenfügen und schreiben
+            [System.IO.File]::WriteAllBytes(".\$targetName", $exeContent + $dataContent)
+            
+            $packedFile = Get-ChildItem -Path ".\$targetName"
+          }
+
           if (-not $packedFile) {
-            Write-Error "FEHLER: Packer hat keine Ausgabedatei erzeugt!"
+            Write-Error "FEHLER: Weder Python noch manueller Fix konnten die EXE erstellen."
             exit 1
           }
-          Write-Host "Packed File created: $($packedFile.FullName)"
+
+          Write-Host "Packed File ready: $($packedFile.FullName)"
           Pop-Location
 
-          # 4. Zielordner vorbereiten
+          # Zielordner vorbereiten
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
 
-          # 5. Finalen Namen bestimmen
+          # Finalen Namen bestimmen
           $finalName = "TechnikHilfe-Loske_Portable_$env:VERSION_TAG.exe"
           if ("${{ matrix.variant }}" -eq "qs") {
             $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
           }
 
-          # 6. Verschieben und Umbenennen
+          # Verschieben
           Move-Item $packedFile.FullName "$outDir\$finalName" -Force
           Write-Host "✅ SUCCESS: $outDir\$finalName"
 
