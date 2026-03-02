@@ -286,6 +286,26 @@ jobs:
              exit 1
           }
 
+      - name: Apply QuickSupport Mods (Only if QS)
+        if: matrix.variant == 'qs'
+        shell: bash
+        env:
+          QS_TARGET: ${{ secrets.QS_TARGET_ID }}
+        run: |
+          echo "🔧 Wende QuickSupport Modifikationen an..."
+          
+          # 1. SETTINGS BUTTON ENTFERNEN
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          
+          # 2. FESTE ID EINBAUEN & EDITIEREN SPERREN
+          if [ -n "$QS_TARGET" ]; then
+             find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
+          fi
+          # ReadOnly erzwingen
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
+          
+          echo "✅ QuickSupport Modifikationen fertig."
+
       - name: Build Variant
         shell: pwsh
         env:
@@ -310,10 +330,6 @@ jobs:
 
           Write-Host "Build Environment Setup Complete."
           Write-Host "VCPKG Include: $vcpkgInclude"
-
-          if ("${{ matrix.variant }}" -eq "qs") {
-            Write-Host "Applying QuickSupport modifications..."
-          }
 
           python build.py --portable --flutter --skip-portable-pack
 
