@@ -293,17 +293,11 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
-          
-          # 1. SETTINGS BUTTON ENTFERNEN
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
-          
-          # 2. FESTE ID EINBAUEN & EDITIEREN SPERREN
           if [ -n "$QS_TARGET" ]; then
+             echo "Setze Ziel-ID auf: $QS_TARGET"
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
-          # ReadOnly erzwingen
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/autofocus: true/readOnly: true, autofocus: false/g'
-          
           echo "✅ QuickSupport Modifikationen fertig."
 
       - name: Build Variant
