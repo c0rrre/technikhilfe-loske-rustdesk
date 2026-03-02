@@ -314,45 +314,44 @@ jobs:
         run: |
           pip install -r libs/portable/requirements.txt
           
-          $rawBuildDir = Resolve-Path "flutter\build\windows\x64\runner\Release"
-          Write-Host "Packing source from: $rawBuildDir"
+          # FIX: .Path am Ende, damit wir einen echten String haben
+          $rawBuildDir = (Resolve-Path "flutter\build\windows\x64\runner\Release").Path
+          $targetName = "rustdesk.exe"
+          $sourceExePath = "$rawBuildDir\$targetName"
+
+          Write-Host "Packing source from: $sourceExePath"
           
-          # Wir merken uns den Namen der Eingabe-EXE (meist rustdesk.exe)
-          $inputExe = Get-ChildItem -Path "$rawBuildDir" -Filter "*.exe" | Select-Object -First 1
-          $targetName = $inputExe.Name
+          if (-not (Test-Path $sourceExePath)) {
+            Write-Error "CRITICAL: Quell-EXE nicht gefunden unter $sourceExePath"
+            exit 1
+          }
 
           Push-Location libs/portable
           
-          # Generierung starten
+          # Generierung starten (erzeugt data.bin)
           python generate.py -f "$rawBuildDir" -o . -e "$targetName"
           
-          # DEBUG: Zeigen, was erstellt wurde (falls es wieder fehlschlägt)
-          Write-Host "Inhalt von libs/portable:"
-          Get-ChildItem | Select-Object Name, Length
-
-          # 1. VERSUCH: Hat Python die EXE erstellt?
-          # Das Skript nennt sie meistens einfach "rustdesk.exe" (ohne -packed)
+          # Prüfen, ob Python die EXE erstellt hat (heißt meist rustdesk.exe im aktuellen Ordner)
           $packedFile = Get-ChildItem -Path . -Filter "$targetName" -ErrorAction SilentlyContinue
 
-          # 2. NOTFALL PLAN: Falls Python nur data.bin erstellt hat, kleben wir es selbst zusammen
+          # FALLBACK: Manuelles Zusammenfügen (wenn Python nur data.bin gebaut hat)
           if (-not $packedFile -and (Test-Path "data.bin")) {
-            Write-Host "⚠️ Python hat keine EXE erstellt, aber data.bin ist da. Manuelles Zusammenfügen..." -ForegroundColor Yellow
+            Write-Host "⚠️ Python hat keine EXE erstellt. Starte manuellen Merge..." -ForegroundColor Yellow
             
-            # Kopiere Original-EXE hierher
-            Copy-Item "$rawBuildDir\$targetName" -Destination ".\$targetName"
+            # Wir lesen direkt die Original-EXE (sicherer als erst kopieren)
+            $bytesExe = [System.IO.File]::ReadAllBytes($sourceExePath)
+            $bytesData = [System.IO.File]::ReadAllBytes(".\data.bin")
             
-            # data.bin an die EXE anhängen (Binär)
-            $exeContent = [System.IO.File]::ReadAllBytes(".\$targetName")
-            $dataContent = [System.IO.File]::ReadAllBytes(".\data.bin")
+            # Neue Datei schreiben
+            $newFileName = "rustdesk-packed.exe"
+            [System.IO.File]::WriteAllBytes(".\$newFileName", $bytesExe + $bytesData)
             
-            # Zusammenfügen und schreiben
-            [System.IO.File]::WriteAllBytes(".\$targetName", $exeContent + $dataContent)
-            
-            $packedFile = Get-ChildItem -Path ".\$targetName"
+            $packedFile = Get-ChildItem -Path ".\$newFileName"
           }
 
           if (-not $packedFile) {
-            Write-Error "FEHLER: Weder Python noch manueller Fix konnten die EXE erstellen."
+            Write-Error "FEHLER: Konnte keine gepackte EXE erstellen."
+            ls # Zeige Ordnerinhalt zur Diagnose
             exit 1
           }
 
