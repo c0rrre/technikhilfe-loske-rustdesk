@@ -216,9 +216,8 @@ jobs:
           path: |
             flutter/lib/generated_bridge*.dart
             src/bridge_generated*.rs
-            flutter/windows/runner/bridge_generated.h
 
-  # ==========================================
+    # ==========================================
   # JOB 3 – BUILD MATRIX
   # ==========================================
   build:
@@ -265,25 +264,12 @@ jobs:
             !C:\vcpkg\packages
           key: vcpkg-cache-windows-2022-static-deps-v1
       
-      # Sicherheitscheck: Falls Cache fehlt, brich ab (oder installiere nach)
       - name: Check vcpkg existence
         shell: powershell
         run: |
           if (!(Test-Path "C:\vcpkg\installed\x64-windows-static\include\opus\opus.h")) {
             Write-Error "VCPKG Cache wurde nicht gefunden! Dependencies fehlen."
             exit 1
-          }
-
-      - name: Debug VCPKG Content
-        shell: powershell
-        run: |
-          Write-Host "Checking VCPKG content..."
-          if (Test-Path "C:\vcpkg\installed\x64-windows-static\include\opus\opus_multistream.h") {
-             Write-Host "SUCCESS: Opus Header gefunden!" -ForegroundColor Green
-          } else {
-             Write-Host "ERROR: Opus Header NICHT gefunden in C:\vcpkg..." -ForegroundColor Red
-             Get-ChildItem -Path C:\ -MaxDepth 2
-             exit 1
           }
 
       - name: Apply QuickSupport Mods (Only if QS)
@@ -300,7 +286,7 @@ jobs:
           fi
           echo "✅ QuickSupport Modifikationen fertig."
 
-      - name: Build Variant
+      - name: Build Variant (Raw Files)
         shell: pwsh
         env:
           LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
@@ -309,47 +295,67 @@ jobs:
           $vcpkgInclude = "$vcpkgRoot\installed\x64-windows-static\include"
           $vcpkgLib = "$vcpkgRoot\installed\x64-windows-static\lib"
           
-          # 1. MSVC Variablen
           $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
           $env:LIB = "$vcpkgLib;$env:LIB"
-          
-          # 2. WICHTIG: Clang Variablen (für bindgen/opus)
           $env:CPATH = "$vcpkgInclude;$env:CPATH"
           $env:C_INCLUDE_PATH = "$vcpkgInclude;$env:C_INCLUDE_PATH"
-          
-          # 3. VCPKG Variablen für Rust
           $env:VCPKG_ROOT = $vcpkgRoot
-          # Dieser Pfad hilft pkg-config scripts
           $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig;$env:PKG_CONFIG_PATH"
 
           Write-Host "Build Environment Setup Complete."
-          Write-Host "VCPKG Include: $vcpkgInclude"
-
+          
+          # WICHTIG: --skip-portable-pack ist HIER WIEDER DRIN!
+          # Grund: Wir wollen die rohen Dateien (EXE + DLLs), damit dein Packer-Script
+          # im nächsten Schritt daraus sauber EINE Datei machen kann.
           python build.py --portable --flutter --skip-portable-pack
 
-          $buildDir = "flutter\build\windows\x64\runner\Release"
+      - name: Pack Portable Executable
+        shell: pwsh
+        run: |
+          # 1. Python Dependencies für den Packer installieren
+          pip install -r libs/portable/requirements.txt
+          
+          # 2. Pfade definieren
+          # Hier liegen die rohen Dateien (rustdesk.exe, flutter_windows.dll, etc.)
+          $rawBuildDir = Resolve-Path "flutter\build\windows\x64\runner\Release"
+          $targetName = "rustdesk.exe"
+          
+          Write-Host "Packing source from: $rawBuildDir"
+          
+          # 3. Packer ausführen
+          Push-Location libs/portable
+          # -f: Eingabeordner (wo die rohe EXE liegt)
+          # -o: Ausgabeordner (aktuelles Verzeichnis libs/portable)
+          # -e: Name der Eingabe-EXE
+          python generate.py -f "$rawBuildDir" -o . -e "$targetName"
+          
+          # Der Packer erstellt eine Datei, die auf "-packed.exe" endet (z.B. rustdesk-packed.exe)
+          $packedFile = Get-ChildItem -Filter "*-packed.exe" | Select-Object -First 1
+          
+          if (-not $packedFile) {
+            Write-Error "FEHLER: Packer hat keine Ausgabedatei erzeugt!"
+            exit 1
+          }
+          Write-Host "Packed File created: $($packedFile.FullName)"
+          Pop-Location
+
+          # 4. Zielordner vorbereiten
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
 
+          # 5. Finalen Namen bestimmen
           $finalName = "TechnikHilfe-Loske_Portable_$env:VERSION_TAG.exe"
-          
           if ("${{ matrix.variant }}" -eq "qs") {
             $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
           }
 
-          Write-Host "Suche EXE in: $buildDir"
-          if (Test-Path "$buildDir\*.exe") {
-            Move-Item "$buildDir\*.exe" $outDir -Force
-            Write-Host "EXE erfolgreich nach $outDir verschoben."
-          } else {
-            Write-Error "ERROR - Build fehlgeschlagen: Keine EXE gefunden in $buildDir"
-            exit 1
-          }
+          # 6. Verschieben und Umbenennen
+          Move-Item $packedFile.FullName "$outDir\$finalName" -Force
+          Write-Host "✅ SUCCESS: $outDir\$finalName"
 
       - uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.variant }}
-          # WICHTIG: Nutze / statt \ (auch bei Windows), sonst findet Action die Datei nicht!
           path: build_output_${{ matrix.variant }}/*.exe
 
   # ==========================================
