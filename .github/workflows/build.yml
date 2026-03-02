@@ -301,8 +301,11 @@ jobs:
           $env:C_INCLUDE_PATH = "$vcpkgInclude;$env:C_INCLUDE_PATH"
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig;$env:PKG_CONFIG_PATH"
+          # Wir zwingen Bindgen dazu, den vcpkg Include-Pfad als explizites Argument an Clang zu übergeben.
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
 
           Write-Host "Build Environment Setup Complete."
+          Write-Host "BINDGEN Args: $env:BINDGEN_EXTRA_CLANG_ARGS"
           
           # WICHTIG: --skip-portable-pack ist HIER WIEDER DRIN!
           # Grund: Wir wollen die rohen Dateien (EXE + DLLs), damit dein Packer-Script
