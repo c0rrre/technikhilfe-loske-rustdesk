@@ -229,7 +229,6 @@ jobs:
       matrix:
         variant: [standard, qs]
     env:
-      env:
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
       FLUTTER_VERSION: '3.24.5'
       VCPKG_ROOT: C:\vcpkg
@@ -317,6 +316,19 @@ jobs:
           }
 
           python build.py --portable --flutter --skip-portable-pack
+
+          $buildDir = "flutter\build\windows\x64\runner\Release"
+          $outDir = "build_output_${{ matrix.variant }}"
+          New-Item -ItemType Directory -Path $outDir -Force
+
+          Write-Host "Suche EXE in: $buildDir"
+          if (Test-Path "$buildDir\*.exe") {
+            Move-Item "$buildDir\*.exe" $outDir -Force
+            Write-Host "EXE erfolgreich nach $outDir verschoben."
+          } else {
+            Write-Error "ERROR - Build fehlgeschlagen: Keine EXE gefunden in $buildDir"
+            exit 1
+          }
 
       - uses: actions/upload-artifact@v4
         with:
