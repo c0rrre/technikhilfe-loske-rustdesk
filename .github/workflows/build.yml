@@ -20,6 +20,13 @@ jobs:
   # ==========================================
   prepare-source:
     runs-on: windows-2022
+    env:
+      # Globale Variablen
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      LLVM_INSTALL_PATH: C:\Program Files\LLVM
+      VCPKG_ROOT: C:\vcpkg
+      # WICHTIG: Damit VCPKG unsere manuell installierten Tools (NASM) findet!
+      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     outputs:
       version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
     steps:
@@ -59,6 +66,47 @@ jobs:
           DATE=$(date +'%Y-%m-%d-%H-%M')
           echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
 
+      - name: Apply Custom Branding
+        shell: bash
+        env:
+          MY_APP_NAME: ${{ secrets.APP_NAME }}
+        run: |
+          if [ -n "$MY_APP_NAME" ]; then
+             sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
+             find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
+          fi
+          if [ -f "logo.png" ]; then
+             mkdir -p flutter/assets/images
+             cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
+             find flutter -name "logo.png" -exec cp "logo.png" {} + || true
+          fi
+          if [ -f "app_icon.ico" ]; then
+             mkdir -p flutter/windows/runner/resources
+             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+          fi
+
+      # --- 4. SERVER CONFIGURATION ---
+      - name: Inject Server Configuration
+        shell: bash
+        env:
+          VAL_API: ${{ secrets.API_SERVER }}
+          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
+          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
+          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
+        run: |
+          TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
+          for CONF in "${TARGETS[@]}"; do
+            if [ -f "$CONF" ]; then
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
+              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
+            fi
+          done
+
       - name: Upload Prepared Source
         uses: actions/upload-artifact@v4
         with:
@@ -86,6 +134,10 @@ jobs:
           name: source-prepared
           path: .
 
+      - name: Install Build Tools (LLVM & NASM)
+        shell: powershell
+        run: choco install llvm nasm -y
+
       - uses: ilammy/msvc-dev-cmd@v1
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
@@ -104,52 +156,54 @@ jobs:
             ~\AppData\Local\Pub\Cache
           key: pub-${{ hashFiles('flutter/pubspec.lock') }}
 
-      # VCPKG
-      - name: Cache VCPKG
-        id: vcpkg-cache
-        uses: actions/cache@v4
-        with:
-          path: ${{ github.workspace }}/vcpkg
-          key: vcpkg-${{ env.VCPKG_COMMIT_ID }}
-
-      - name: Install VCPKG (Manifest Mode)
-        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
-        shell: pwsh
+      # --- 8a. Setup vcpkg ---
+      - name: Setup vcpkg
+        shell: powershell
         run: |
-          $vcpkgDir = "$env:GITHUB_WORKSPACE\vcpkg"
-          if (-not (Test-Path $vcpkgDir)) {
-              git clone https://github.com/microsoft/vcpkg $vcpkgDir
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
           }
-          cd $vcpkgDir
+          cd C:\vcpkg
           git fetch
-          git reset --hard $env:VCPKG_COMMIT_ID
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
           .\bootstrap-vcpkg.bat
       
-          # Manifest Mode nutzen: einfach aus Repo root
-          cd $env:GITHUB_WORKSPACE
-          $env:VCPKG_ROOT = $vcpkgDir
-          
-          .\vcpkg\vcpkg install ffmpeg:x64-windows-static
-          .\vcpkg\vcpkg install opus:x64-windows-static
-          .\vcpkg\vcpkg install libvpx:x64-windows-static
-          .\vcpkg\vcpkg install libyuv:x64-windows-static
-          .\vcpkg\vcpkg install aom:x64-windows-static
-        
-      # Flutter Rust Bridge
-      - name: Install flutter_rust_bridge_codegen
-        run: cargo install flutter_rust_bridge_codegen --version 1.80.1 --force
-
-      - name: Generate Bridge
-        shell: pwsh
+      # --- 8b. Cache Basis-Pakete (ohne libmfx) ---
+      - name: Cache vcpkg installed
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg\installed\x64-windows-static\lib
+            C:\vcpkg\installed\x64-windows-static\include
+          key: vcpkg-${{ runner.os }}-120deac3062162151622ca224860575a33844ba10b-basis
+      
+      # --- 8c. Install vcpkg Dependencies ---
+      - name: Install vcpkg Dependencies
+        shell: powershell
         run: |
+          cd C:\vcpkg
+          # Basis-Pakete (werden ggf. aus Cache geladen)
+          .\vcpkg install ffmpeg:x64-windows-static
+          .\vcpkg install opus:x64-windows-static
+          .\vcpkg install libvpx:x64-windows-static
+          .\vcpkg install libyuv:x64-windows-static
+          .\vcpkg install aom:x64-windows-static
+
+      - name: Cache Python Pip
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('libs/portable/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+        
+      - name: Generate Flutter Rust Bridge
+        shell: powershell
+        run: |
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
           Push-Location flutter
           flutter pub get
           Pop-Location
-          flutter_rust_bridge_codegen `
-            --rust-input src/flutter_ffi.rs `
-            --dart-output flutter/lib/generated_bridge.dart `
-            --rust-output src/bridge_generated.rs `
-            --c-output flutter/windows/runner/bridge_generated.h
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
 
       - uses: actions/upload-artifact@v4
         with:
@@ -192,7 +246,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: vcpkg
-          key: vcpkg-120deac3062162151622ca4860575a33844ba10b
+          key: vcpkg-120deac3062162151622ca4860575a33844ba10b23
 
       - name: Build Variant
         shell: pwsh
