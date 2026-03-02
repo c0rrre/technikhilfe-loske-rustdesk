@@ -169,13 +169,18 @@ jobs:
           .\bootstrap-vcpkg.bat
       
       # --- 8b. Cache Basis-Pakete (ohne libmfx) ---
-      - name: Cache vcpkg installed
+      # --- 8b. Cache Basis-Pakete ---
+      - name: Cache vcpkg
         uses: actions/cache@v4
+        id: cache-vcpkg
         with:
+          # Wir cachen das ganze Verzeichnis, schließen aber Downloads/Buildtrees aus um Platz zu sparen
           path: |
-            C:\vcpkg\installed\x64-windows-static\lib
-            C:\vcpkg\installed\x64-windows-static\include
-          key: vcpkg-${{ runner.os }}-120deac3062162151622ca224860575a33844ba10b-basis
+            C:\vcpkg
+            !C:\vcpkg\buildtrees
+            !C:\vcpkg\downloads
+            !C:\vcpkg\packages
+          key: vcpkg-cache-windows-2022-static-deps-v1
       
       # --- 8c. Install vcpkg Dependencies ---
       - name: Install vcpkg Dependencies
@@ -224,8 +229,9 @@ jobs:
       matrix:
         variant: [standard, qs]
     env:
+      env:
       VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
-      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_ROOT: C:\vcpkg
       VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - uses: actions/download-artifact@v4
@@ -244,9 +250,23 @@ jobs:
 
       - name: Restore VCPKG Cache
         uses: actions/cache@v4
+        id: cache-vcpkg
         with:
-          path: vcpkg
-          key: vcpkg-120deac3062162151622ca4860575a33844ba10b23
+          path: |
+            C:\vcpkg
+            !C:\vcpkg\buildtrees
+            !C:\vcpkg\downloads
+            !C:\vcpkg\packages
+          key: vcpkg-cache-windows-2022-static-deps-v1
+      
+      # Sicherheitscheck: Falls Cache fehlt, brich ab (oder installiere nach)
+      - name: Check vcpkg existence
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg\installed\x64-windows-static\include\opus\opus.h")) {
+            Write-Error "VCPKG Cache wurde nicht gefunden! Dependencies fehlen."
+            exit 1
+          }
 
       - name: Build Variant
         shell: pwsh
