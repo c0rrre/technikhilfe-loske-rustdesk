@@ -321,7 +321,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: exe-${{ matrix.variant }}
-          path: build_output_${{ matrix.variant }}\*.exe
+          # WICHTIG: Nutze / statt \ (auch bei Windows), sonst findet Action die Datei nicht!
+          path: build_output_${{ matrix.variant }}/*.exe
 
   # ==========================================
   # JOB 4 – RELEASE
