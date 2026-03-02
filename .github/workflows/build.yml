@@ -215,7 +215,7 @@ jobs:
           name: shared-bridge
           path: |
             flutter/lib/generated_bridge.dart
-            src/bridge_generated.rs
+            src/bridge_generated*.rs
             flutter/windows/runner/bridge_generated.h
 
   # ==========================================
