@@ -136,7 +136,7 @@ jobs:
   # ==========================================
   # JOB 3 – BUILD TEST
   # ==========================================
-  build:
+  test-build:
     needs: [prepare-source, prepare-deps]
     runs-on: windows-2022
     # Für einen reinen Test-Build reicht meistens EINE Variante, um Syntax-Fehler zu finden. 
