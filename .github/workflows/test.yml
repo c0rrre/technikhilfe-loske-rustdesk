@@ -13,44 +13,94 @@ env:
 
 jobs:
   # ==========================================
-  # JOB 1 – PREPARE SOURCE (TEST MODE)
+  # JOB 1 – PREPARE SOURCE
   # ==========================================
   prepare-source:
     runs-on: windows-2022
+    env:
+      # Globale Variablen
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
+      LLVM_INSTALL_PATH: C:\Program Files\LLVM
+      VCPKG_ROOT: C:\vcpkg
+      # WICHTIG: Damit VCPKG unsere manuell installierten Tools (NASM) findet!
+      VCPKG_KEEP_ENV_VARS: "PATH;INCLUDE;LIB;LIBPATH"
     outputs:
-      version_tag: "test-build"
+      version_tag: ${{ steps.vars.outputs.VERSION_TAG }}
     steps:
-      - name: Checkout Code (PR)
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
+      - name: Checkout RustDesk
+        shell: bash
+        run: |
+          git clone --recursive https://github.com/rustdesk/rustdesk.git rustdesk_src
+          cd rustdesk_src
+          REF="${{ github.event.inputs.rustdesk_ref || 'master' }}"
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            REF="${{ github.ref_name }}"
+          fi
+          git checkout "$REF" || git checkout master
+          git submodule update --init --recursive
+          cd ..
 
       - name: Checkout Branding Repo
         shell: bash
         run: |
-          git clone "https://github.com/${{ github.repository }}.git" my_branding_src || echo "Branding Repo not found or same as source"
+          git clone "https://github.com/${{ github.repository }}.git" my_branding_src
 
       - name: Merge Source + Branding
         shell: bash
         run: |
+          cp -r rustdesk_src/* .
+          cp -r rustdesk_src/.* . 2>/dev/null || true
           if [ -d "my_branding_src/BRANDING" ]; then
             cp -r my_branding_src/BRANDING .
           fi
-          rm -rf my_branding_src
+          rm -rf rustdesk_src my_branding_src
 
-      # In einem reinen Test-Build können wir Mock-Server-Daten verwenden, 
-      # da die App ohnehin nicht veröffentlicht wird.
-      - name: Inject Mock Server Configuration
+      - name: Set Version
+        id: vars
         shell: bash
+        run: |
+          VERSION=$(grep '^version' Cargo.toml | head -n 1 | sed -E 's/version\s*=\s*"(.*)"/\1/')
+          DATE=$(date +'%Y-%m-%d-%H-%M')
+          echo "VERSION_TAG=${VERSION}-${DATE}" >> $GITHUB_OUTPUT
+
+      - name: Apply Custom Branding
+        shell: bash
+        env:
+          MY_APP_NAME: ${{ secrets.APP_NAME }}
+        run: |
+          if [ -n "$MY_APP_NAME" ]; then
+             sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
+             find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
+             find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
+          fi
+          if [ -f "logo.png" ]; then
+             mkdir -p flutter/assets/images
+             cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
+             find flutter -name "logo.png" -exec cp "logo.png" {} + || true
+          fi
+          if [ -f "app_icon.ico" ]; then
+             mkdir -p flutter/windows/runner/resources
+             cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+          fi
+
+      # --- 4. SERVER CONFIGURATION ---
+      - name: Inject Server Configuration
+        shell: bash
+        env:
+          VAL_API: ${{ secrets.API_SERVER }}
+          VAL_REND: ${{ secrets.RENDEZVOUS_SERVER }}
+          VAL_KEY: ${{ secrets.RS_PUB_KEY }}
+          VAL_ID: ${{ secrets.ID_SERVER || secrets.RENDEZVOUS_SERVER }}
         run: |
           TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
           for CONF in "${TARGETS[@]}"; do
             if [ -f "$CONF" ]; then
-              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"test.local\";|g" "$CONF"
-              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"test.local\";|g" "$CONF"
-              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"test.local\";|g" "$CONF"
-              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"test.local\"];|g" "$CONF"
-              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"mock-key\";|g" "$CONF"
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"$VAL_ID\";|g" "$CONF"
+              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"$VAL_API\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"$VAL_REND\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"$VAL_REND\"];|g" "$CONF"
+              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"$VAL_KEY\";|g" "$CONF"
             fi
           done
 
@@ -70,6 +120,11 @@ jobs:
   prepare-deps:
     needs: prepare-source
     runs-on: windows-2022
+    env:
+      FLUTTER_VERSION: '3.24.5'
+      VCPKG_COMMIT_ID: '120deac306216251622ca4860575a33844ba10b'
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -84,6 +139,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: swatinem/rust-cache@v2
 
+      # Flutter
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
@@ -93,30 +149,55 @@ jobs:
       - name: Cache Pub
         uses: actions/cache@v4
         with:
-          path: ~\AppData\Local\Pub\Cache
+          path: |
+            ~\AppData\Local\Pub\Cache
           key: pub-${{ hashFiles('flutter/pubspec.lock') }}
 
-      - name: Restore VCPKG Cache
+      # --- 8a. Setup vcpkg ---
+      - name: Setup vcpkg
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg")) {
+            git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          }
+          cd C:\vcpkg
+          git fetch
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          .\bootstrap-vcpkg.bat
+      
+      # --- 8b. Cache Basis-Pakete (ohne libmfx) ---
+      # --- 8b. Cache Basis-Pakete ---
+      - name: Cache vcpkg
         uses: actions/cache@v4
         id: cache-vcpkg
         with:
+          # Wir cachen das ganze Verzeichnis, schließen aber Downloads/Buildtrees aus um Platz zu sparen
           path: |
             C:\vcpkg
             !C:\vcpkg\buildtrees
             !C:\vcpkg\downloads
             !C:\vcpkg\packages
           key: vcpkg-cache-windows-2022-static-deps-v1
-
-      - name: Setup vcpkg (if cache miss)
-        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+      
+      # --- 8c. Install vcpkg Dependencies ---
+      - name: Install vcpkg Dependencies
         shell: powershell
         run: |
-          git clone https://github.com/microsoft/vcpkg C:\vcpkg
           cd C:\vcpkg
-          git reset --hard 120deac3062162151622ca4860575a33844ba10b
-          .\bootstrap-vcpkg.bat
-          .\vcpkg install ffmpeg:x64-windows-static opus:x64-windows-static libvpx:x64-windows-static libyuv:x64-windows-static aom:x64-windows-static
+          # Basis-Pakete (werden ggf. aus Cache geladen)
+          .\vcpkg install ffmpeg:x64-windows-static
+          .\vcpkg install opus:x64-windows-static
+          .\vcpkg install libvpx:x64-windows-static
+          .\vcpkg install libyuv:x64-windows-static
+          .\vcpkg install aom:x64-windows-static
 
+      - name: Cache Python Pip
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\pip\Cache
+          key: pip-${{ runner.os }}-${{ hashFiles('libs/portable/requirements.txt') }}
+          restore-keys: pip-${{ runner.os }}-
+        
       - name: Generate Flutter Rust Bridge
         shell: powershell
         run: |
@@ -133,18 +214,21 @@ jobs:
             flutter/lib/generated_bridge*.dart
             src/bridge_generated*.rs
 
-  # ==========================================
-  # JOB 3 – BUILD TEST
+    # ==========================================
+  # JOB 3 – BUILD MATRIX
   # ==========================================
   test-build:
     needs: [prepare-source, prepare-deps]
     runs-on: windows-2022
-    # Für einen reinen Test-Build reicht meistens EINE Variante, um Syntax-Fehler zu finden. 
-    # Spart 50% der Build-Zeit bei jedem PR.
     strategy:
       fail-fast: false
       matrix:
-        variant: [standard] 
+        variant: [standard, qs]
+    env:
+      VERSION_TAG: ${{ needs.prepare-source.outputs.version_tag }}
+      FLUTTER_VERSION: '3.24.5'
+      VCPKG_ROOT: C:\vcpkg
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -168,6 +252,7 @@ jobs:
 
       - name: Restore VCPKG Cache
         uses: actions/cache@v4
+        id: cache-vcpkg
         with:
           path: |
             C:\vcpkg
@@ -184,6 +269,20 @@ jobs:
             exit 1
           }
 
+      - name: Apply QuickSupport Mods (Only if QS)
+        if: matrix.variant == 'qs'
+        shell: bash
+        env:
+          QS_TARGET: ${{ secrets.QS_TARGET_ID }}
+        run: |
+          echo "🔧 Wende QuickSupport Modifikationen an..."
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          if [ -n "$QS_TARGET" ]; then
+             echo "Setze Ziel-ID auf: $QS_TARGET"
+             find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
+          fi
+          echo "✅ QuickSupport Modifikationen fertig."
+
       - name: Build client
         shell: pwsh
         env:
@@ -199,12 +298,90 @@ jobs:
           $env:C_INCLUDE_PATH = "$vcpkgInclude;$env:C_INCLUDE_PATH"
           $env:VCPKG_ROOT = $vcpkgRoot
           $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig;$env:PKG_CONFIG_PATH"
+          # Wir zwingen Bindgen dazu, den vcpkg Include-Pfad als explizites Argument an Clang zu übergeben.
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
 
-          Write-Host "Build Environment Setup Complete. Starting Test Build..."
+          Write-Host "Build Environment Setup Complete."
+          Write-Host "BINDGEN Args: $env:BINDGEN_EXTRA_CLANG_ARGS"
           
-          # Wir bauen den Code, um sicherzustellen, dass er kompiliert.
+          # WICHTIG: --skip-portable-pack ist HIER WIEDER DRIN!
+          # Grund: Wir wollen die rohen Dateien (EXE + DLLs), damit dein Packer-Script
+          # im nächsten Schritt daraus sauber EINE Datei machen kann.
           python build.py --portable --flutter --skip-portable-pack
+
+      - name: Pack Portable Executable
+        shell: pwsh
+        run: |
+          # 1. Python Dependencies
+          pip install -r libs/portable/requirements.txt
           
-          # Wenn dieser Befehl durchläuft (Exit Code 0), gilt der Test als bestanden.
-          Write-Host "✅ Build Test Successful!"
+          # 2. Pfade absolut auflösen (WICHTIG für Python)
+          # Wo liegen die gebauten Dateien?
+          $sourceDir = (Resolve-Path "flutter\build\windows\x64\runner\Release").Path
+          # Wo liegt das Packer-Skript?
+          $packerScriptDir = (Resolve-Path "libs\portable").Path
+          # Wo wollen wir arbeiten? (Sandbox)
+          $workDir = "$env:GITHUB_WORKSPACE\temp_pack"
+          
+          Write-Host "Source: $sourceDir"
+          Write-Host "Packer: $packerScriptDir"
+          Write-Host "WorkDir: $workDir"
+
+          # 3. Arbeitsordner erstellen und alles hineinkopieren
+          New-Item -ItemType Directory -Path $workDir -Force
+          Copy-Item "$sourceDir\*" "$workDir" -Recurse -Force
+          
+          # Die EXE im Arbeitsordner finden
+          $targetExeName = "rustdesk.exe"
+          $targetExePath = "$workDir\$targetExeName"
+          
+          if (-not (Test-Path $targetExePath)) {
+            Write-Error "CRITICAL: rustdesk.exe nicht im Arbeitsordner gefunden!"
+            exit 1
+          }
+
+          # 4. Packer ausführen
+          # Wir wechseln in den Packer-Ordner, damit er seine eigenen Templates findet
+          Push-Location $packerScriptDir
+          
+          Write-Host "Starte Python Packer..."
+          # -f: Input Ordner (unser WorkDir)
+          # -o: Output Ordner (auch WorkDir, damit data.bin dort landet)
+          # -e: Name der EXE
+          python generate.py -f "$workDir" -o "$workDir" -e "$targetExeName"
+          
+          Pop-Location # Zurück aus libs/portable
+
+          # 5. Überprüfen und Zusammenfügen
+          $dataBinPath = "$workDir\data.bin"
+          
+          if (Test-Path $dataBinPath) {
+            Write-Host "✅ data.bin wurde erstellt. Füge EXE und DATA zusammen..."
+            
+            # Bytes lesen (ALLES ABSOLUTE PFADE)
+            $bytesExe = [System.IO.File]::ReadAllBytes($targetExePath)
+            $bytesData = [System.IO.File]::ReadAllBytes($dataBinPath)
+            
+            # Neue Datei: rustdesk-packed.exe im WorkDir
+            $packedPath = "$workDir\rustdesk-packed.exe"
+            [System.IO.File]::WriteAllBytes($packedPath, $bytesExe + $bytesData)
+            
+            Write-Host "Erfolgreich gepackt: $packedPath"
+          } else {
+            Write-Error "FEHLER: Python Skript hat keine data.bin in $workDir erstellt."
+            Get-ChildItem $workDir # Zeige Inhalt zur Diagnose
+            exit 1
+          }
+
+          # 6. Finalen Namen bestimmen und verschieben
+          $outDir = "build_output_${{ matrix.variant }}"
+          New-Item -ItemType Directory -Path $outDir -Force
+
+          $finalName = "TechnikHilfe-Loske_Portable_$env:VERSION_TAG.exe"
+          if ("${{ matrix.variant }}" -eq "qs") {
+            $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
+          }
+
+          # Die gepackte Datei als finale Datei verschieben
+          Move-Item $packedPath "$outDir\$finalName" -Force
+          Write-Host "✅ FINAL SUCCESS: $outDir\$finalName"
