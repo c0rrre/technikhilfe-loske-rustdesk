@@ -1,0 +1,210 @@
+name: RustDesk PR Build Test
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.24.5'
+  VCPKG_ROOT: C:\vcpkg
+  VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
+jobs:
+  # ==========================================
+  # JOB 1 – PREPARE SOURCE (TEST MODE)
+  # ==========================================
+  prepare-source:
+    runs-on: windows-2022
+    outputs:
+      version_tag: "test-build"
+    steps:
+      - name: Checkout Code (PR)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Checkout Branding Repo
+        shell: bash
+        run: |
+          git clone "https://github.com/${{ github.repository }}.git" my_branding_src || echo "Branding Repo not found or same as source"
+
+      - name: Merge Source + Branding
+        shell: bash
+        run: |
+          if [ -d "my_branding_src/BRANDING" ]; then
+            cp -r my_branding_src/BRANDING .
+          fi
+          rm -rf my_branding_src
+
+      # In einem reinen Test-Build können wir Mock-Server-Daten verwenden, 
+      # da die App ohnehin nicht veröffentlicht wird.
+      - name: Inject Mock Server Configuration
+        shell: bash
+        run: |
+          TARGETS=("src/config.rs" "libs/hbb_common/src/config.rs")
+          for CONF in "${TARGETS[@]}"; do
+            if [ -f "$CONF" ]; then
+              sed -i "s|^.*pub const ID_SERVER:.*$|pub const ID_SERVER: \&'static str = \"test.local\";|g" "$CONF"
+              sed -i "s|^.*pub const API_SERVER:.*$|pub const API_SERVER: \&'static str = \"test.local\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVER:.*$|pub const RENDEZVOUS_SERVER: \&'static str = \"test.local\";|g" "$CONF"
+              sed -i "s|^.*pub const RENDEZVOUS_SERVERS:.*$|pub const RENDEZVOUS_SERVERS: \&[\&str] = \&[\"test.local\"];|g" "$CONF"
+              sed -i "s|^.*pub const RS_PUB_KEY:.*$|pub const RS_PUB_KEY: \&'static str = \"mock-key\";|g" "$CONF"
+            fi
+          done
+
+      - name: Upload Prepared Source
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-prepared
+          path: .
+          exclude: |
+            .git
+            target
+            vcpkg
+
+  # ==========================================
+  # JOB 2 – PREPARE DEPENDENCIES (CACHED)
+  # ==========================================
+  prepare-deps:
+    needs: prepare-source
+    runs-on: windows-2022
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-prepared
+          path: .
+
+      - name: Install Build Tools (LLVM & NASM)
+        shell: powershell
+        run: choco install llvm nasm -y
+
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache Pub
+        uses: actions/cache@v4
+        with:
+          path: ~\AppData\Local\Pub\Cache
+          key: pub-${{ hashFiles('flutter/pubspec.lock') }}
+
+      - name: Restore VCPKG Cache
+        uses: actions/cache@v4
+        id: cache-vcpkg
+        with:
+          path: |
+            C:\vcpkg
+            !C:\vcpkg\buildtrees
+            !C:\vcpkg\downloads
+            !C:\vcpkg\packages
+          key: vcpkg-cache-windows-2022-static-deps-v1
+
+      - name: Setup vcpkg (if cache miss)
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        shell: powershell
+        run: |
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          cd C:\vcpkg
+          git reset --hard 120deac3062162151622ca4860575a33844ba10b
+          .\bootstrap-vcpkg.bat
+          .\vcpkg install ffmpeg:x64-windows-static opus:x64-windows-static libvpx:x64-windows-static libyuv:x64-windows-static aom:x64-windows-static
+
+      - name: Generate Flutter Rust Bridge
+        shell: powershell
+        run: |
+          cargo install flutter_rust_bridge_codegen --version 1.80.1
+          Push-Location flutter
+          flutter pub get
+          Pop-Location
+          flutter_rust_bridge_codegen --rust-input src/flutter_ffi.rs --dart-output flutter/lib/generated_bridge.dart --rust-output src/bridge_generated.rs --c-output flutter/windows/runner/bridge_generated.h
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: shared-bridge
+          path: |
+            flutter/lib/generated_bridge*.dart
+            src/bridge_generated*.rs
+
+  # ==========================================
+  # JOB 3 – BUILD TEST
+  # ==========================================
+  build:
+    needs: [prepare-source, prepare-deps]
+    runs-on: windows-2022
+    # Für einen reinen Test-Build reicht meistens EINE Variante, um Syntax-Fehler zu finden. 
+    # Spart 50% der Build-Zeit bei jedem PR.
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [standard] 
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: source-prepared
+          path: .
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: shared-bridge
+          path: .
+
+      - uses: ilammy/msvc-dev-cmd@v1
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Restore VCPKG Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:\vcpkg
+            !C:\vcpkg\buildtrees
+            !C:\vcpkg\downloads
+            !C:\vcpkg\packages
+          key: vcpkg-cache-windows-2022-static-deps-v1
+      
+      - name: Check vcpkg existence
+        shell: powershell
+        run: |
+          if (!(Test-Path "C:\vcpkg\installed\x64-windows-static\include\opus\opus.h")) {
+            Write-Error "VCPKG Cache wurde nicht gefunden! Dependencies fehlen."
+            exit 1
+          }
+
+      - name: Build client
+        shell: pwsh
+        env:
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\bin"
+        run: |
+          $vcpkgRoot = "C:\vcpkg"
+          $vcpkgInclude = "$vcpkgRoot\installed\x64-windows-static\include"
+          $vcpkgLib = "$vcpkgRoot\installed\x64-windows-static\lib"
+          
+          $env:INCLUDE = "$vcpkgInclude;$env:INCLUDE"
+          $env:LIB = "$vcpkgLib;$env:LIB"
+          $env:CPATH = "$vcpkgInclude;$env:CPATH"
+          $env:C_INCLUDE_PATH = "$vcpkgInclude;$env:C_INCLUDE_PATH"
+          $env:VCPKG_ROOT = $vcpkgRoot
+          $env:PKG_CONFIG_PATH = "$vcpkgLib\pkgconfig;$env:PKG_CONFIG_PATH"
+          $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
+
+          Write-Host "Build Environment Setup Complete. Starting Test Build..."
+          
+          # Wir bauen den Code, um sicherzustellen, dass er kompiliert.
+          python build.py --portable --flutter --skip-portable-pack
+          
+          # Wenn dieser Befehl durchläuft (Exit Code 0), gilt der Test als bestanden.
+          Write-Host "✅ Build Test Successful!"
