@@ -309,6 +309,12 @@ jobs:
           $env:BINDGEN_EXTRA_CLANG_ARGS = "-I$vcpkgInclude"
 
           Write-Host "Starte offiziellen Build & Pack Vorgang..."
+          pip install -r libs/portable/requirements.txt
+          
+          # Wir lassen build.py alles machen. Es kompiliert, packt und fügt es sicher zusammen.
+          python build.py --portable --flutter
+
+          Write-Host "Starte offiziellen Build & Pack Vorgang..."
           
           # Wir lassen build.py alles machen. Es kompiliert, packt und fügt es sicher zusammen.
           python build.py --portable --flutter
