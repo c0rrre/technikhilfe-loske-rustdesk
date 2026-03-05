@@ -83,8 +83,13 @@ jobs:
              find flutter -name "logo.png" -exec cp "logo.png" {} + || true
           fi
           if [ -f "app_icon.ico" ]; then
+             # Flutter Icon austauschen
              mkdir -p flutter/windows/runner/resources
              cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
+             
+             # WICHTIG: Das echte Windows-Icon für die EXE austauschen!
+             mkdir -p res
+             cp "BRANDING/app_icon.ico" "res/icon.ico"
           fi
 
       # --- 4. SERVER CONFIGURATION ---
