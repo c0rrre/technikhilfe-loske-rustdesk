@@ -362,7 +362,7 @@ jobs:
           name: exe-qs
           path: .
 
-      - uses: softprops/action-gh-release@v1
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ needs.prepare-source.outputs.version_tag }}
           # WICHTIG: Da der Tag in Git noch nicht existiert, sagen wir GitHub, 
