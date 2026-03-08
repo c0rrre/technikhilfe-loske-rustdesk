@@ -19,7 +19,7 @@ jobs:
   # JOB 1 – PREPARE SOURCE
   # ==========================================
   prepare-source:
-    runs-on: windows-2022
+    runs-on: windows-2025
     env:
       # Globale Variablen
       LIBCLANG_PATH: C:\Program Files\LLVM\bin
@@ -127,7 +127,7 @@ jobs:
   # ==========================================
   prepare-deps:
     needs: prepare-source
-    runs-on: windows-2022
+    runs-on: windows-2025
     env:
       FLUTTER_VERSION: '3.24.5'
       VCPKG_COMMIT_ID: '120deac306216251622ca4860575a33844ba10b'
@@ -227,7 +227,7 @@ jobs:
   # ==========================================
   build:
     needs: [prepare-source, prepare-deps]
-    runs-on: windows-2022
+    runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
