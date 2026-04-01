@@ -71,27 +71,33 @@ jobs:
         env:
           MY_APP_NAME: ${{ secrets.APP_NAME }}
         run: |
+          # 1. App-Namen ändern
           if [ -n "$MY_APP_NAME" ]; then
              sed -i "s|description: RustDesk|description: $MY_APP_NAME|g" flutter/pubspec.yaml
              find flutter -name "main.cpp" -exec sed -i "s|L\"RustDesk\"|L\"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"FileDescription\", \"RustDesk\"|VALUE \"FileDescription\", \"$MY_APP_NAME\"|g" {} +
              find flutter -name "Runner.rc" -exec sed -i "s|VALUE \"ProductName\", \"RustDesk\"|VALUE \"ProductName\", \"$MY_APP_NAME\"|g" {} +
           fi
-          if [ -f "logo.png" ]; then
+          
+          # 2. Logo korrigieren (Pfade angepasst!)
+          if [ -f "BRANDING/logo.png" ]; then
+             echo "🎨 Logo gefunden, füge in Flutter Assets ein..."
              mkdir -p flutter/assets/images
              cp "BRANDING/logo.png" "flutter/assets/images/logo.png"
-             find flutter -name "logo.png" -exec cp "logo.png" {} + || true
+             # Überschreibe zur Sicherheit alle bestehenden logo.png im flutter Ordner
+             find flutter -name "logo.png" -exec cp "BRANDING/logo.png" {} + || true
           fi
-          if [ -f "app_icon.ico" ]; then
-             # Flutter Icon austauschen
+          
+          # 3. Icon korrigieren (Pfade angepasst!)
+          if [ -f "BRANDING/app_icon.ico" ]; then
+             echo "🖼️ App Icon gefunden, tausche aus..."
              mkdir -p flutter/windows/runner/resources
              cp "BRANDING/app_icon.ico" "flutter/windows/runner/resources/app_icon.ico"
              
-             # WICHTIG: Das echte Windows-Icon für die EXE austauschen!
              mkdir -p res
              cp "BRANDING/app_icon.ico" "res/icon.ico"
           fi
-
+      
       # --- 4. SERVER CONFIGURATION ---
       - name: Inject Server Configuration
         shell: bash
@@ -284,11 +290,25 @@ jobs:
           QS_TARGET: ${{ secrets.QS_TARGET_ID }}
         run: |
           echo "🔧 Wende QuickSupport Modifikationen an..."
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.check_box_outline_blank/g'
+          
+          # 1. Ziel-ID eintragen (Falls vorhanden)
           if [ -n "$QS_TARGET" ]; then
              echo "Setze Ziel-ID auf: $QS_TARGET"
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
+          
+          # 2. Hamburger Menu und Settings unschädlich machen
+          # Ersetzt die Aktion "Menü öffnen" durch "Nichts tun" (null)
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Scaffold.of(context).openEndDrawer()/null/g'
+          
+          # Macht den Klick auf den Settings-Button in der UI wirkungslos
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Get.toNamed(AppRoutes.settings)/null/g'
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Get.to(() => const SettingsPage())/null/g'
+          
+          # Optional: Verstecke das Icon visuell, indem wir die Icons durch unsichtbare (SizedBox/transparent) ersetzen
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.menu/Icons.menu, color: Colors.transparent/g'
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.settings, color: Colors.transparent/g'
+
           echo "✅ QuickSupport Modifikationen fertig."
 
       - name: Build and Pack Client
