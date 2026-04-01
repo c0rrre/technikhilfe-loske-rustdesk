@@ -297,17 +297,14 @@ jobs:
              find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i "s|TextEditingController();|TextEditingController(text: \"$QS_TARGET\");|g"
           fi
           
-          # 2. Hamburger Menu und Settings unschädlich machen
-          # Ersetzt die Aktion "Menü öffnen" durch "Nichts tun" (null)
+          # 2. Hamburger Menu und Settings lahmlegen (Klicks laufen ins Leere)
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Scaffold.of(context).openEndDrawer()/null/g'
-          
-          # Macht den Klick auf den Settings-Button in der UI wirkungslos
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Get.toNamed(AppRoutes.settings)/null/g'
           find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Get.to(() => const SettingsPage())/null/g'
           
-          # Optional: Verstecke das Icon visuell, indem wir die Icons durch unsichtbare (SizedBox/transparent) ersetzen
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.menu/Icons.menu, color: Colors.transparent/g'
-          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/Icons.settings/Icons.settings, color: Colors.transparent/g'
+          # 3. Icons SICHER austauschen (nutzt \b für Wortgrenzen, damit _outlined nicht kaputt geht!)
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/\bIcons\.settings\b/Icons.check_box_outline_blank/g'
+          find flutter/lib -type f -name "*.dart" -print0 | xargs -0 sed -i 's/\bIcons\.menu\b/Icons.check_box_outline_blank/g'
 
           echo "✅ QuickSupport Modifikationen fertig."
 
