@@ -311,16 +311,9 @@ jobs:
           Write-Host "Starte offiziellen Build & Pack Vorgang..."
           pip install -r libs/portable/requirements.txt
           
-          # Wir lassen build.py alles machen. Es kompiliert, packt und fügt es sicher zusammen.
+          # Nur EINMAL aufrufen!
           python build.py --portable --flutter
 
-          Write-Host "Starte offiziellen Build & Pack Vorgang..."
-          
-          # Wir lassen build.py alles machen. Es kompiliert, packt und fügt es sicher zusammen.
-          python build.py --portable --flutter
-
-          # Die fertige, gepackte Single-File-EXE liegt hier:
-          $buildDir = "flutter\build\windows\x64\runner\Release"
           $outDir = "build_output_${{ matrix.variant }}"
           New-Item -ItemType Directory -Path $outDir -Force
 
@@ -330,13 +323,15 @@ jobs:
             $finalName = "TechnikHilfe-Loske_Quicksupport_$env:VERSION_TAG.exe"
           }
 
-          # Datei verschieben
-          Write-Host "Suche finale EXE in: $buildDir"
-          if (Test-Path "$buildDir\rustdesk.exe") {
-            Move-Item "$buildDir\rustdesk.exe" "$outDir\$finalName" -Force
+          # Suche die fertig gepackte EXE im Hauptverzeichnis (build.py benennt sie meistens rustdesk-*-install.exe)
+          Write-Host "Suche finale gepackte EXE im Hauptverzeichnis..."
+          $packedExe = Get-ChildItem -Path . -Filter "rustdesk-*-install.exe" | Select-Object -First 1
+
+          if ($packedExe) {
+            Move-Item $packedExe.FullName "$outDir\$finalName" -Force
             Write-Host "✅ ERFOLG: $outDir\$finalName erstellt!"
           } else {
-            Write-Error "FEHLER: build.py hat keine rustdesk.exe hinterlassen."
+            Write-Error "FEHLER: build.py hat keine fertige EXE im Hauptverzeichnis hinterlassen."
             exit 1
           }
 
